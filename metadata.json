@@ -1,0 +1,8 @@
+{
+  "name": "Remix: 高层次人才智能评估系统",
+  "description": "AI 驱动的高层次人才绩效智能评估系统。支持从绩效合同中提取指标、多源交付物证据提取与交叉对齐，并生成多维度评估报告。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

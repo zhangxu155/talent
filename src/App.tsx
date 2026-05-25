@@ -905,7 +905,7 @@ ${fileContext}
             parsedAudit.completion_status = "部分完成";
             const rawScore = Number(parsedAudit.score) || 0;
             parsedAudit.score = Math.max(80, Math.min(rawScore, 90));
-            parsedAudit.summary = `已有会议纪要类材料显示“${clause.title}”评审通过，但缺少非纪要细节佐证，当前按“部分完成”计分。`;
+            parsedAudit.summary = `已有会议纪要类材料显示“${clause.title}”评审通过，但缺少非纪要细节佐证，当前按“部分完成”计分。已审阅文件数：${perFileAudits.length}。`;
           } else {
             const noEvidenceFiles = perFileAudits
               .filter((f: any) => !f.has_substantive_evidence)
@@ -917,8 +917,20 @@ ${fileContext}
         }
 
         const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];
-        if (evidenceList.length > 0) {
-          const processed = evidenceList.map((ev: any, evIdx: number) => ({
+        // 如果汇总层只返回了单文件证据，补充文件级审计证据，避免“看起来只分析了一个文件”。
+        const aggregatedSourceNames = new Set(
+          evidenceList.map((ev: any) => String(ev?.source_file_name || "").trim()).filter(Boolean)
+        );
+        const fileLevelEvidenceFallback = perFileAudits.flatMap((fa: any) => {
+          const name = String(fa.file_name || "").trim();
+          const list = Array.isArray(fa.extracted_evidences) ? fa.extracted_evidences : [];
+          // 只补充汇总层未覆盖到的文件证据
+          if (!name || aggregatedSourceNames.has(name)) return [];
+          return list.slice(0, 2).map((ev: any) => ({ ...ev, source_file_name: name }));
+        });
+        const mergedEvidenceList = [...evidenceList, ...fileLevelEvidenceFallback];
+        if (mergedEvidenceList.length > 0) {
+          const processed = mergedEvidenceList.map((ev: any, evIdx: number) => ({
             ...ev,
             evidence_id: `EV_C${i}_${evIdx}_${uuidv4().substring(0,4)}`,
             source_file_name: ev.source_file_name || files.map(f => f.name).join(", "),

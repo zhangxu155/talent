@@ -66,6 +66,12 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function conciseText(text: string, max = 40): string {
+  const cleaned = String(text || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+  return cleaned.length > max ? `${cleaned.slice(0, max)}…` : cleaned;
+}
+
 const PolarTick = (props: any) => {
   const { x, y, payload, textAnchor } = props;
   const value = payload.value;
@@ -902,8 +908,8 @@ export default function App() {
           score: audit.score || 0,
           target_benchmark: c.target_description || "-",
           completion_status: audit.completion_status || "未完成",
-          actual_value: audit.conclusion?.substring(0, 200) || "无数据",
-          evidence_summary: audit.conclusion || "未发现支撑材料",
+          actual_value: conciseText(audit.conclusion || "无数据", 40),
+          evidence_summary: conciseText(audit.conclusion || "未发现支撑材料", 40),
           matched_evidence_ids: allEvidences.filter(e => e.matched_clause_id === c.clause_id).map(e => e.evidence_id)
         };
       });
@@ -1589,11 +1595,11 @@ function CreateTaskForm({
                <FileCheck className="size-4 text-indigo-600" /> 核心评价依据
             </h4>
             <FileInputGroup 
-              label="绩效合同文件 (.xlsx, .pdf, .docx)" 
+              label="绩效合同文件 (.xlsx, .pdf, .docx, 图片)" 
               name="contract" 
               required 
               onFilesChange={handleContractFileSelect} 
-              accept=".xlsx,.xls,.pdf,.docx,.doc"
+              accept=".xlsx,.xls,.pdf,.docx,.doc,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
               hint="以此为评估的硬性指标基准"
             />
             
@@ -1647,7 +1653,7 @@ function CreateTaskForm({
                   label="岗位说明/胜任力指标 (可选)" 
                   name="jd_files" 
                   multiple
-                  accept=".pdf,.docx,.txt,.xlsx,.xls"
+                  accept=".pdf,.docx,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
                   onFilesChange={handleJDFileSelect}
                   hint="以此为胜任力评估标准"
                 />
@@ -1658,7 +1664,7 @@ function CreateTaskForm({
                   label="人才个人简历 (可选)" 
                   name="resume_files" 
                   multiple
-                  accept=".pdf,.docx,.txt,.xlsx,.xls"
+                  accept=".pdf,.docx,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
                   onFilesChange={handleResumeFileSelect}
                   hint="候选人背景画像补充"
                 />
@@ -2381,7 +2387,7 @@ function ReportView({
                           <span className="text-xs font-black uppercase tracking-widest">评价证据/依据</span>
                         </div>
                         <div className="text-sm text-slate-700 font-medium leading-relaxed bg-cyan-50/30 p-4 rounded-xl border border-cyan-100/50 h-full">
-                          {dim.evidence || "基于历史产出和行为数据综合评估"}
+                          {conciseText(dim.evidence || "基于历史产出和行为数据综合评估", 40)}
                         </div>
                       </div>
 
@@ -2392,7 +2398,7 @@ function ReportView({
                           <span className="text-xs font-black uppercase tracking-widest">评价逻辑解析</span>
                         </div>
                         <div className="text-sm text-slate-600 leading-relaxed bg-amber-50/30 p-4 rounded-xl border border-amber-100/50 h-full">
-                          {dim.logic || "对比人才标准与实际业绩产出的重难点，评估能力的颗粒度与复用性。"}
+                          {conciseText(dim.logic || "对比人才标准与实际业绩产出的重难点，评估能力的颗粒度与复用性。", 40)}
                         </div>
                       </div>
                     </div>
@@ -2888,7 +2894,7 @@ function ReportView({
                                            <MessageSquare className="size-3" /> 审计专家解析建议
                                         </h6>
                                         <p className="text-sm text-slate-600 bg-white p-6 rounded-3xl border border-slate-100 leading-relaxed italic">
-                                          {r.evidence_summary}
+                                          {conciseText(r.evidence_summary || "", 40)}
                                         </p>
                                       </div>
                                       <div className="space-y-4">
@@ -3230,5 +3236,3 @@ function HistoryView({ history, loading, onSelect, onNew }: { history: any[], lo
     </div>
   );
 }
-
-

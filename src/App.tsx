@@ -841,11 +841,11 @@ export default function App() {
         
         JSON 输出:
         {
-          "summary": "针对该指标的综合审计判断（需引用材料事实）",
+          "summary": "针对该指标的综合审计判断（30-40字，需引用材料事实）",
           "completion_status": "完成/未完成/部分完成",
           "score": 0-100,
           "extracted_evidences": [
-             { "title": "证据关键点", "raw_excerpt": "原文核心片段摘录", "summary": "此事实如何证明指标达成", "confidence": 0.95 }
+             { "title": "证据关键点", "raw_excerpt": "原文核心片段摘录", "summary": "此事实如何证明指标达成（30-40字）", "confidence": 0.95 }
           ]
         }`;
 
@@ -902,7 +902,7 @@ export default function App() {
           score: audit.score || 0,
           target_benchmark: c.target_description || "-",
           completion_status: audit.completion_status || "未完成",
-          actual_value: audit.conclusion?.substring(0, 200) || "无数据",
+          actual_value: audit.conclusion || "无数据",
           evidence_summary: audit.conclusion || "未发现支撑材料",
           matched_evidence_ids: allEvidences.filter(e => e.matched_clause_id === c.clause_id).map(e => e.evidence_id)
         };
@@ -935,8 +935,8 @@ export default function App() {
       请严格按照以下 JSON 格式输出：
       {
         "score": 0-10,
-        "summary": "基于证据的人才价值点深度总结",
-        "details": { "亮点1": "具体贡献说明", "亮点2": "具体贡献说明" }
+        "summary": "基于证据的人才价值点深度总结（30-40字）",
+        "details": { "亮点1": "具体贡献说明（30-40字）", "亮点2": "具体贡献说明（30-40字）" }
       }`;
       
       console.log("Starting Value Creation evaluation...");
@@ -970,10 +970,10 @@ export default function App() {
         "fit_score": 0-100,
         "fit_eval": "对该员工岗位适配度的定性评价",
         "radar_data": [
-          { "subject": "培育与协同力", "score": 0-100, "baseline": 80, "conclusion": "评价结论", "evidence": "对应支撑业绩标题或行为表现", "logic": "评估逻辑解析" },
-          { "subject": "创新与战略落地力", "score": 0-100, "baseline": 80, "conclusion": "评价结论", "evidence": "对应支撑业绩标题或行为表现", "logic": "评估逻辑解析" },
-          { "subject": "产品履约交付力", "score": 0-100, "baseline": 85, "conclusion": "评价结论", "evidence": "对应支撑业绩标题或行为表现", "logic": "评估逻辑解析" },
-          { "subject": "技术突破攻坚力", "score": 0-100, "baseline": 90, "conclusion": "评价结论", "evidence": "对应支撑业绩标题或行为表现", "logic": "评估逻辑解析" }
+          { "subject": "培育与协同力", "score": 0-100, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "创新与战略落地力", "score": 0-100, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "产品履约交付力", "score": 0-100, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "技术突破攻坚力", "score": 0-100, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
         ],
         "strengths": ["优势1", "优势2"],
         "weaknesses": ["改进1", "改进2"],
@@ -1589,11 +1589,11 @@ function CreateTaskForm({
                <FileCheck className="size-4 text-indigo-600" /> 核心评价依据
             </h4>
             <FileInputGroup 
-              label="绩效合同文件 (.xlsx, .pdf, .docx)" 
+              label="绩效合同文件 (.xlsx, .pdf, .docx, 图片)" 
               name="contract" 
               required 
               onFilesChange={handleContractFileSelect} 
-              accept=".xlsx,.xls,.pdf,.docx,.doc"
+              accept=".xlsx,.xls,.pdf,.docx,.doc,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
               hint="以此为评估的硬性指标基准"
             />
             
@@ -1647,7 +1647,7 @@ function CreateTaskForm({
                   label="岗位说明/胜任力指标 (可选)" 
                   name="jd_files" 
                   multiple
-                  accept=".pdf,.docx,.txt,.xlsx,.xls"
+                  accept=".pdf,.docx,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
                   onFilesChange={handleJDFileSelect}
                   hint="以此为胜任力评估标准"
                 />
@@ -1658,7 +1658,7 @@ function CreateTaskForm({
                   label="人才个人简历 (可选)" 
                   name="resume_files" 
                   multiple
-                  accept=".pdf,.docx,.txt,.xlsx,.xls"
+                  accept=".pdf,.docx,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
                   onFilesChange={handleResumeFileSelect}
                   hint="候选人背景画像补充"
                 />
@@ -3230,5 +3230,3 @@ function HistoryView({ history, loading, onSelect, onNew }: { history: any[], lo
     </div>
   );
 }
-
-

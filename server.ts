@@ -89,6 +89,45 @@ const ai = new GoogleGenAI({
 });
 
 // --- Helpers ---
+
+async function extractImageTextWithOCR(filePath: string): Promise<string> {
+  // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
+  return parseOfficeToText(filePath, {
+    ocr: true,
+    ocrConfig: {
+      language: "chi_sim+eng",
+      autoTerminateTimeout: 3000
+    }
+  });
+}
+
+async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
+  try {
+    const ast = await officeParser.parseOffice(filePath, options);
+    if (ast && typeof ast.toText === "function") {
+      return String(ast.toText() || "").trim();
+    }
+    if (typeof ast === "string") return ast.trim();
+    if (ast && typeof ast === "object") {
+      return String((ast as any).text || "").trim();
+    }
+    return "";
+  } catch (err: any) {
+    console.warn("officeParser parse failed:", err.message);
+    return "";
+  }
+}
+
+function looksLikeBinaryOrBase64Blob(text: string): boolean {
+  if (!text) return false;
+  const compact = text.replace(/\s+/g, "");
+  // Very long base64-like stream
+  if (compact.length > 500 && /^[A-Za-z0-9+/=]+$/.test(compact)) return true;
+  // Too many replacement/unprintable chars
+  const badChars = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g) || []).length;
+  return badChars / Math.max(text.length, 1) > 0.02;
+}
+
 async function extractFileText(filePath: string, fileName: string): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
@@ -150,21 +189,8 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
         }
       } catch (err: any) {
         console.warn("Standard PDF parser failed, attempting fallback to officeparser", err.message);
-        data = await new Promise((resolve, reject) => {
-           officeParser.parseOffice(filePath, (extractedText: any, error: any) => {
-              if (error) {
-                  // One last attempt - direct string check if file is just readable
-                  try {
-                      const content = fs.readFileSync(filePath, 'utf8');
-                      if (content.length > 100) resolve({ text: content });
-                      else reject(error);
-                  } catch(e) {
-                      reject(error);
-                  }
-              }
-              else resolve({ text: extractedText });
-           });
-        });
+        const fallbackText = await parseOfficeToText(filePath);
+        data = { text: fallbackText };
       }
 
       if (typeof data === "string") {
@@ -172,10 +198,8 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
       } else if (data && typeof data === "object") {
         // Handle various library return formats
         extracted = (data as any).text || (data as any).data || (data as any).content || "";
-        if (!extracted && Object.keys(data).length > 0) {
-          // If it's an object but we don't recognize the keys, don't just String() it
-          extracted = JSON.stringify(data);
-        }
+        // Don't stringify unknown parser objects into binary/base64 noise.
+        if (!extracted) extracted = "";
       } else {
         extracted = String(data || "");
       }
@@ -205,16 +229,33 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
           }
         });
       });
+    } else if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
+      extracted = await extractImageTextWithOCR(filePath);
     } else if (ext === ".txt" || ext === ".md" || ext === ".json" || ext === ".csv") {
       extracted = buffer.toString("utf-8");
     }
 
     const trimmed = (typeof extracted === 'string' ? extracted : String(extracted || "")).trim();
-    if (trimmed.length < 10 && buffer.length > 1000) {
-      if (ext === ".pdf") return `[此 PDF 文件可能是扫描件或图片格式，无法提取文字内容，请上传可编辑版本]`;
+    const normalized = looksLikeBinaryOrBase64Blob(trimmed) ? "" : trimmed;
+    if (normalized.length < 10 && buffer.length > 1000) {
+      if (ext === ".pdf") {
+        // For scanned PDFs, enforce OCR via officeParser's OCR pipeline.
+        const ocrText = await parseOfficeToText(filePath, {
+          ocr: true,
+          ocrConfig: {
+            language: "chi_sim+eng",
+            autoTerminateTimeout: 3000
+          }
+        });
+        if (ocrText && ocrText.length >= 10) return ocrText;
+        return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR回退但仍未获得有效文本，建议先转为PNG后上传或提高扫描质量]`;
+      }
+      if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
+        return `[图片文件 OCR 结果过少: ${fileName}。请提高分辨率/对比度，或检查 tesseract.js 语言数据加载是否正常]`;
+      }
       return `[解析内容过空: ${fileName} - 无法提取有效文本]`;
     }
-    return trimmed || `[文件内容为空: ${fileName}]`;
+    return normalized || `[文件内容为空: ${fileName}]`;
   } catch (err: any) {
     console.error(`Serious error parsing ${fileName}:`, err);
     return `[解析出错: ${fileName} - ${err.message}]`;

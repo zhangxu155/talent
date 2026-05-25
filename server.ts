@@ -10,6 +10,7 @@ const pdf = require("pdf-parse");
 const officeParser = require("officeparser");
 import mammoth from "mammoth";
 import cors from "cors";
+import { pathToFileURL } from "url";
 import { Decimal } from "decimal.js";
 import { GoogleGenAI } from "@google/genai";
 const XLSX = require("xlsx");
@@ -128,7 +129,7 @@ function looksLikeBinaryOrBase64Blob(text: string): boolean {
   return badChars / Math.max(text.length, 1) > 0.02;
 }
 
-async function extractFileText(filePath: string, fileName: string): Promise<string> {
+export async function extractFileText(filePath: string, fileName: string): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
   
@@ -989,4 +990,7 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => console.log(`Server running on http://localhost:${PORT}`));
 }
 
-startServer();
+const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isDirectRun) {
+  startServer();
+}

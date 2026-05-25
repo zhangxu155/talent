@@ -108,6 +108,23 @@ async function extractImageTextWithOCR(filePath: string): Promise<string> {
   }
 }
 
+async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
+  try {
+    const ast = await officeParser.parseOffice(filePath, options);
+    if (ast && typeof ast.toText === "function") {
+      return String(ast.toText() || "").trim();
+    }
+    if (typeof ast === "string") return ast.trim();
+    if (ast && typeof ast === "object") {
+      return String((ast as any).text || "").trim();
+    }
+    return "";
+  } catch (err: any) {
+    console.warn("officeParser parse failed:", err.message);
+    return "";
+  }
+}
+
 async function extractFileText(filePath: string, fileName: string): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
@@ -169,21 +186,8 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
         }
       } catch (err: any) {
         console.warn("Standard PDF parser failed, attempting fallback to officeparser", err.message);
-        data = await new Promise((resolve, reject) => {
-           officeParser.parseOffice(filePath, (extractedText: any, error: any) => {
-              if (error) {
-                  // One last attempt - direct string check if file is just readable
-                  try {
-                      const content = fs.readFileSync(filePath, 'utf8');
-                      if (content.length > 100) resolve({ text: content });
-                      else reject(error);
-                  } catch(e) {
-                      reject(error);
-                  }
-              }
-              else resolve({ text: extractedText });
-           });
-        });
+        const fallbackText = await parseOfficeToText(filePath);
+        data = { text: fallbackText };
       }
 
       if (typeof data === "string") {
@@ -233,12 +237,13 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
     const trimmed = (typeof extracted === 'string' ? extracted : String(extracted || "")).trim();
     if (trimmed.length < 10 && buffer.length > 1000) {
       if (ext === ".pdf") {
-        // For scanned PDFs, retry using officeParser (may use OCR backend where available in JS runtime).
-        const ocrText = await new Promise<string>((resolve) => {
-          officeParser.parseOffice(filePath, (data: any, err: any) => {
-            if (err || !data) resolve("");
-            else resolve(String(data || "").trim());
-          });
+        // For scanned PDFs, enforce OCR via officeParser's OCR pipeline.
+        const ocrText = await parseOfficeToText(filePath, {
+          ocr: true,
+          ocrConfig: {
+            language: "chi_sim+eng",
+            autoTerminateTimeout: 3000
+          }
         });
         if (ocrText && ocrText.length >= 10) return ocrText;
         return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR回退但仍未获得有效文本，建议先转为PNG后上传或提高扫描质量]`;

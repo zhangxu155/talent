@@ -140,14 +140,14 @@ function compressTextForLocalModel(text: string, clauseTitle: string, clauseDesc
   
   // 1. 本地扫描件/图片格式处理逻辑说明与高融合度提示
   if (text.includes("此 PDF 文件可能是扫描件或图片格式")) {
-    return `[本地模型交付物预警] 文件 ${fileName} 在离线私有化部署环境下属于纯图片扫描件，无有效可读文本内容。
-此时由于本地本地解析解析引擎（如 pdf-parse）不原生支持图片识别导致文本缺失，推荐以下解决办法：
-1. 生产环境中，建议在此系统的前端或后端（server.ts）中引入 Tesseract.js / EasyOCR 或通过 Python (pdfplumber/pdf2image) 配合 OCR 框架，将扫描件识别出文本后再传入模型；
-2. 针对本审计实例的解析逻辑：检测到此附件名称为“${fileName}”，此标题格式极高程度命中了当前需要核验的合同指标【${clauseTitle}】。本地模型将视此“命名完全匹配的附加材料”为该指标的客观交付凭证之一。`;
+    // 保留原始文本，不再仅用文件名提示替代，避免“只剩文件名”导致证据丢失。
+    return `${text}
+
+[解析提示] 文件名: ${fileName}；关联指标: ${clauseTitle}`;
   }
 
   // 本地大模型上下文大小限制（字符流控制在 4000 个字符安全极限内，折合约 2000-2500 左右 Token，极为安全且专注）
-  const maxLocalChars = 4000;
+  const maxLocalChars = 16000;
   if (text.length <= maxLocalChars) {
     return text; // 短少文档直接返回，不再浪费计算
   }
@@ -827,7 +827,7 @@ export default function App() {
           continue;
         }
 
-        const combinedContext = optimizedFiles.map(f => `[文件: ${f.name}]\n${f.text || ""}`).join("\n\n").substring(0, aiConfig.provider === 'local' ? 12000 : 50000);
+        const combinedContext = optimizedFiles.map(f => `[文件: ${f.name}]\n${f.text || ""}`).join("\n\n").substring(0, aiConfig.provider === 'local' ? 40000 : 50000);
 
         const auditPrompt = `你是一个资深人才评估审计专家。
         待审计指标：【${clause.title}】

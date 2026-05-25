@@ -896,7 +896,7 @@ ${fileContext}
 
         if (!hasSubstantiveNonMinutes && parsedAudit.completion_status === "完成") {
           parsedAudit.completion_status = "部分完成";
-          parsedAudit.score = Math.min(Number(parsedAudit.score) || 0, 79);
+          parsedAudit.score = Math.min(Number(parsedAudit.score) || 0, 90);
         }
 
         if (!hasSubstantiveNonMinutes) {
@@ -904,7 +904,7 @@ ${fileContext}
             // 仅有会议纪要时，给出“部分完成”而非0分，避免与业务常识冲突。
             parsedAudit.completion_status = "部分完成";
             const rawScore = Number(parsedAudit.score) || 0;
-            parsedAudit.score = Math.max(50, Math.min(rawScore, 79));
+            parsedAudit.score = Math.max(80, Math.min(rawScore, 90));
             parsedAudit.summary = `已有会议纪要类材料显示“${clause.title}”评审通过，但缺少非纪要细节佐证，当前按“部分完成”计分。`;
           } else {
             const noEvidenceFiles = perFileAudits

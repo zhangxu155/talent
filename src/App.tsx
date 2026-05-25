@@ -827,53 +827,79 @@ export default function App() {
           continue;
         }
 
-        const combinedContext = optimizedFiles.map(f => `[文件: ${f.name}]\n${f.text || ""}`).join("\n\n").substring(0, aiConfig.provider === 'local' ? 40000 : 50000);
+        const perFileAudits: any[] = [];
+        for (let fi = 0; fi < optimizedFiles.length; fi++) {
+          const file = optimizedFiles[fi];
+          const fileContext = String(file.text || "").substring(0, aiConfig.provider === 'local' ? 30000 : 40000);
+          const fileAuditPrompt = `你是一个资深人才评估审计专家。
+待审计指标：【${clause.title}】
+考核基准：${clause.target_description}
+当前交付物文件：${file.name}
+文件文本：
+${fileContext}
 
-        const auditPrompt = `你是一个资深人才评估审计专家。
-        待审计指标：【${clause.title}】
-        考核基准：${clause.target_description}
-        关联证明材料：
-        ${combinedContext}
-        
-        【审计规则】：
-        1. 证据核实：根据材料判断指标是否由于交付物证明已完成。仅限使用提供的材料。
-        2. 会议纪要特殊逻辑：如果是会议纪要/评审纪要，且提到了该指标内容，只要没有明确的“不通过”、“拒绝”、“被驳回”等负面结论，一律默认视为“指标已达成/评审已通过”。
-        
-        JSON 输出:
-        {
-          "summary": "针对该指标的综合审计判断（30-40字，需引用材料事实）",
-          "completion_status": "完成/未完成/部分完成",
-          "score": 0-120,
-          "extracted_evidences": [
-             { "title": "证据关键点", "raw_excerpt": "原文核心片段摘录", "summary": "此事实如何证明指标达成（30-40字）", "confidence": 0.95 }
-          ]
-        }`;
-
-        if (i > 0) await new Promise(r => setTimeout(r, 1200));
-        
-        console.log(`Auditing clause ${i+1}/${clauses.length}: ${clause.title}`);
-        let resp = "";
-        try {
-          resp = await api.callAI(auditPrompt, aiConfig);
-        } catch (aiErr: any) {
-          console.error(`AI Audit failed for clause ${clause.clause_id}:`, aiErr);
-          // Don't crash the whole process, just mark this clause as failed/unknown
-          resp = JSON.stringify({
-            summary: `审计请求失败: ${aiErr.message}`,
-            completion_status: "未知",
-            score: 0,
-            extracted_evidences: []
+请输出JSON：
+{
+  "file_name":"${file.name}",
+  "is_meeting_minutes": true/false,
+  "has_substantive_evidence": true/false,
+  "completion_status": "完成/未完成/部分完成",
+  "score": 0-120,
+  "summary": "该文件对本指标的判断（30-40字）",
+  "extracted_evidences": [{"title":"证据点","raw_excerpt":"原文","summary":"说明","confidence":0.9}]
+}`;
+          let fileResp = "";
+          try {
+            fileResp = await api.callAI(fileAuditPrompt, aiConfig);
+          } catch (aiErr: any) {
+            fileResp = JSON.stringify({ file_name: file.name, is_meeting_minutes: false, has_substantive_evidence: false, completion_status: "未知", score: 0, summary: `文件审计失败: ${aiErr.message}`, extracted_evidences: [] });
+          }
+          const fileAudit = extractJSON(fileResp) || {};
+          perFileAudits.push({
+            file_name: file.name,
+            is_meeting_minutes: Boolean(fileAudit.is_meeting_minutes),
+            has_substantive_evidence: Boolean(fileAudit.has_substantive_evidence),
+            completion_status: fileAudit.completion_status || "未知",
+            score: Math.max(0, Math.min(120, Number(fileAudit.score) || 0)),
+            summary: fileAudit.summary || "",
+            extracted_evidences: Array.isArray(fileAudit.extracted_evidences) ? fileAudit.extracted_evidences : []
           });
         }
 
-        const parsedAudit = extractJSON(resp);
-        console.log(`Clause ${i+1} audit result:`, parsedAudit.completion_status);
+        const hasSubstantiveNonMinutes = perFileAudits.some((f: any) => !f.is_meeting_minutes && f.has_substantive_evidence);
+        const aggregatePrompt = `你是人才评估终审专家。请根据文件级审计结果做指标汇总。
+待审计指标：【${clause.title}】
+考核基准：${clause.target_description}
+文件级结果：${JSON.stringify(perFileAudits)}
 
-        if (parsedAudit.extracted_evidences && Array.isArray(parsedAudit.extracted_evidences)) {
-          const processed = parsedAudit.extracted_evidences.map((ev: any, evIdx: number) => ({
+规则：
+1) 仅依据给定文件级结果。
+2) 会议纪要“默认通过”仅在 hasSubstantiveNonMinutes=true 时可作为加分/佐证，不可单独决定完成。
+3) 若 hasSubstantiveNonMinutes=false，则最终不允许给出“完成”。
+
+已知 hasSubstantiveNonMinutes=${hasSubstantiveNonMinutes}.
+
+输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"证据点","raw_excerpt":"原文","summary":"说明","confidence":0.9,"source_file_name":"文件名"}] }`;
+
+        let aggResp = "";
+        try {
+          aggResp = await api.callAI(aggregatePrompt, aiConfig);
+        } catch (aiErr: any) {
+          aggResp = JSON.stringify({ summary: `汇总审计失败: ${aiErr.message}`, completion_status: "未知", score: 0, adopted_files: [], rejected_files: [], extracted_evidences: [] });
+        }
+        const parsedAudit = extractJSON(aggResp) || {};
+        if (!hasSubstantiveNonMinutes && parsedAudit.completion_status === "完成") {
+          parsedAudit.completion_status = "部分完成";
+          parsedAudit.score = Math.min(Number(parsedAudit.score) || 0, 79);
+          parsedAudit.summary = `${parsedAudit.summary || ''}（已按规则降级：缺少非纪要实质证据）`;
+        }
+
+        const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];
+        if (evidenceList.length > 0) {
+          const processed = evidenceList.map((ev: any, evIdx: number) => ({
             ...ev,
             evidence_id: `EV_C${i}_${evIdx}_${uuidv4().substring(0,4)}`,
-            source_file_name: files.map(f => f.name).join(", "),
+            source_file_name: ev.source_file_name || files.map(f => f.name).join(", "),
             matched_clause_id: clause.clause_id,
             adopted_flag: true
           }));

@@ -139,6 +139,26 @@ async function extractPdfTextWithOCR(filePath: string): Promise<string> {
   return combined.trim();
 }
 
+async function extractImageTextWithOCR(filePath: string): Promise<string> {
+  const hasTesseract = canUseBinary("tesseract");
+  if (!hasTesseract) return "";
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talent-img-ocr-"));
+  const outBase = path.join(tmpRoot, "image-ocr");
+  try {
+    execFileSync("tesseract", [filePath, outBase, "-l", "chi_sim+eng", "--psm", "6"], { stdio: "ignore" });
+    const txtPath = `${outBase}.txt`;
+    if (!fs.existsSync(txtPath)) return "";
+    return fs.readFileSync(txtPath, "utf-8").trim();
+  } catch (err: any) {
+    console.warn("Image OCR failed:", err.message);
+    return "";
+  } finally {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
 async function extractFileText(filePath: string, fileName: string): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
@@ -255,6 +275,8 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
           }
         });
       });
+    } else if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
+      extracted = await extractImageTextWithOCR(filePath);
     } else if (ext === ".txt" || ext === ".md" || ext === ".json" || ext === ".csv") {
       extracted = buffer.toString("utf-8");
     }
@@ -265,6 +287,9 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
         const ocrText = await extractPdfTextWithOCR(filePath);
         if (ocrText && ocrText.length >= 10) return ocrText;
         return `[此 PDF 文件可能是扫描件或图片格式，无法提取文字内容。系统已尝试 OCR 回退但仍未获得有效文本，请确认清晰度或安装 pdftoppm+tesseract 后重试]`;
+      }
+      if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
+        return `[图片文件 OCR 结果过少: ${fileName}。请提高分辨率/对比度，或确认已安装 tesseract 与中文语言包 chi_sim]`;
       }
       return `[解析内容过空: ${fileName} - 无法提取有效文本]`;
     }

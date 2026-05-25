@@ -1589,11 +1589,11 @@ function CreateTaskForm({
                <FileCheck className="size-4 text-indigo-600" /> 核心评价依据
             </h4>
             <FileInputGroup 
-              label="绩效合同文件 (.xlsx, .pdf, .docx)" 
+              label="绩效合同文件 (.xlsx, .pdf, .docx, 图片)" 
               name="contract" 
               required 
               onFilesChange={handleContractFileSelect} 
-              accept=".xlsx,.xls,.pdf,.docx,.doc"
+              accept=".xlsx,.xls,.pdf,.docx,.doc,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
               hint="以此为评估的硬性指标基准"
             />
             
@@ -1647,7 +1647,7 @@ function CreateTaskForm({
                   label="岗位说明/胜任力指标 (可选)" 
                   name="jd_files" 
                   multiple
-                  accept=".pdf,.docx,.txt,.xlsx,.xls"
+                  accept=".pdf,.docx,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
                   onFilesChange={handleJDFileSelect}
                   hint="以此为胜任力评估标准"
                 />
@@ -1658,7 +1658,7 @@ function CreateTaskForm({
                   label="人才个人简历 (可选)" 
                   name="resume_files" 
                   multiple
-                  accept=".pdf,.docx,.txt,.xlsx,.xls"
+                  accept=".pdf,.docx,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff"
                   onFilesChange={handleResumeFileSelect}
                   hint="候选人背景画像补充"
                 />
@@ -3230,5 +3230,4 @@ function HistoryView({ history, loading, onSelect, onNew }: { history: any[], lo
     </div>
   );
 }
-
 

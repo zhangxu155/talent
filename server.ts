@@ -76,18 +76,23 @@ const tasks: Record<string, EvaluationTask> = {};
 
 // --- AI Service ---
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-if (!GEMINI_API_KEY) {
-  console.warn("WARNING: GEMINI_API_KEY is not set in environment variables. Please check Settings > Secrets.");
-}
+let ai: GoogleGenAI | null = null;
 
-const ai = new GoogleGenAI({ 
-  apiKey: GEMINI_API_KEY || "missing-key",
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
+function getGeminiClient(): GoogleGenAI {
+  if (ai) return ai;
+  if (!GEMINI_API_KEY) {
+    console.warn("WARNING: GEMINI_API_KEY is not set in environment variables. Please check Settings > Secrets.");
   }
-});
+  ai = new GoogleGenAI({
+    apiKey: GEMINI_API_KEY || "missing-key",
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      }
+    }
+  });
+  return ai;
+}
 
 // --- Helpers ---
 
@@ -858,7 +863,7 @@ async function startServer() {
 
         console.log(`AI Proxy [Gemini]: Calling gemini-3-flash-preview...`);
         try {
-          const response = await ai.models.generateContent({
+          const response = await getGeminiClient().models.generateContent({
             model: "gemini-3-flash-preview",
             contents: prompt,
             config: {

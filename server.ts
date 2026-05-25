@@ -209,6 +209,19 @@ export async function extractFileText(filePath: string, fileName: string): Promi
       } else {
         extracted = String(data || "");
       }
+
+      // Integration hardening for real business PDFs:
+      // if parser returns empty/garbled text, try OCR fallback so upload flow remains usable.
+      const cleanedPdfText = String(extracted || "").trim();
+      if (!cleanedPdfText || looksLikeBinaryOrBase64Blob(cleanedPdfText)) {
+        console.warn("PDF text empty/garbled, fallback to OCR pipeline");
+        const ocrText = await extractImageTextWithOCR(filePath);
+        if (ocrText && !looksLikeBinaryOrBase64Blob(ocrText)) {
+          extracted = ocrText;
+        } else if (!cleanedPdfText && ocrText) {
+          extracted = ocrText;
+        }
+      }
     } else if (ext === ".xlsx" || ext === ".xls") {
       const workbook = XLSX.read(buffer);
       let fullText = "";

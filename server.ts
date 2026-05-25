@@ -8,7 +8,6 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const pdf = require("pdf-parse");
 const officeParser = require("officeparser");
-const { createWorker } = require("tesseract.js");
 import mammoth from "mammoth";
 import cors from "cors";
 import { Decimal } from "decimal.js";
@@ -92,20 +91,14 @@ const ai = new GoogleGenAI({
 // --- Helpers ---
 
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
-  let worker: any = null;
-  try {
-    worker = await createWorker("chi_sim+eng", 1, {
-      workerPath: require.resolve("tesseract.js/src/worker-script/node/index.js")
-    });
-    await worker.setParameters({ tessedit_pageseg_mode: "6" });
-    const result = await worker.recognize(filePath);
-    return result?.data?.text?.trim?.() || "";
-  } catch (err: any) {
-    console.warn("Image OCR failed:", err.message);
-    return "";
-  } finally {
-    if (worker) await worker.terminate();
-  }
+  // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
+  return parseOfficeToText(filePath, {
+    ocr: true,
+    ocrConfig: {
+      language: "chi_sim+eng",
+      autoTerminateTimeout: 3000
+    }
+  });
 }
 
 async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {

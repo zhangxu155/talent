@@ -888,18 +888,32 @@ ${fileContext}
           aggResp = JSON.stringify({ summary: `汇总审计失败: ${aiErr.message}`, completion_status: "未知", score: 0, adopted_files: [], rejected_files: [], extracted_evidences: [] });
         }
         const parsedAudit = extractJSON(aggResp) || {};
+        const hasMeetingMinutesSupport = perFileAudits.some((f: any) => {
+          const txt = String(f.summary || "");
+          const appearsApproved = /(通过|评审通过|验收通过|同意推进)/.test(txt);
+          return Boolean(f.is_meeting_minutes) && (Boolean(f.has_substantive_evidence) || Number(f.score) >= 60 || appearsApproved);
+        });
+
         if (!hasSubstantiveNonMinutes && parsedAudit.completion_status === "完成") {
           parsedAudit.completion_status = "部分完成";
           parsedAudit.score = Math.min(Number(parsedAudit.score) || 0, 79);
         }
 
         if (!hasSubstantiveNonMinutes) {
-          const noEvidenceFiles = perFileAudits
-            .filter((f: any) => !f.has_substantive_evidence)
-            .map((f: any) => f.file_name)
-            .slice(0, 3)
-            .join('、');
-          parsedAudit.summary = `未发现可直接证明“${clause.title}”达成的非纪要实质证据；重点核查文件：${noEvidenceFiles || '（未识别到有效文件名）'}。`;
+          if (hasMeetingMinutesSupport) {
+            // 仅有会议纪要时，给出“部分完成”而非0分，避免与业务常识冲突。
+            parsedAudit.completion_status = "部分完成";
+            const rawScore = Number(parsedAudit.score) || 0;
+            parsedAudit.score = Math.max(50, Math.min(rawScore, 79));
+            parsedAudit.summary = `已有会议纪要类材料显示“${clause.title}”评审通过，但缺少非纪要细节佐证，当前按“部分完成”计分。`;
+          } else {
+            const noEvidenceFiles = perFileAudits
+              .filter((f: any) => !f.has_substantive_evidence)
+              .map((f: any) => f.file_name)
+              .slice(0, 3)
+              .join('、');
+            parsedAudit.summary = `未发现可直接证明“${clause.title}”达成的非纪要实质证据；重点核查文件：${noEvidenceFiles || '（未识别到有效文件名）'}。`;
+          }
         }
 
         const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];

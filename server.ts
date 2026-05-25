@@ -125,6 +125,16 @@ async function parseOfficeToText(filePath: string, options: any = {}): Promise<s
   }
 }
 
+function looksLikeBinaryOrBase64Blob(text: string): boolean {
+  if (!text) return false;
+  const compact = text.replace(/\s+/g, "");
+  // Very long base64-like stream
+  if (compact.length > 500 && /^[A-Za-z0-9+/=]+$/.test(compact)) return true;
+  // Too many replacement/unprintable chars
+  const badChars = (text.match(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g) || []).length;
+  return badChars / Math.max(text.length, 1) > 0.02;
+}
+
 async function extractFileText(filePath: string, fileName: string): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
@@ -195,10 +205,8 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
       } else if (data && typeof data === "object") {
         // Handle various library return formats
         extracted = (data as any).text || (data as any).data || (data as any).content || "";
-        if (!extracted && Object.keys(data).length > 0) {
-          // If it's an object but we don't recognize the keys, don't just String() it
-          extracted = JSON.stringify(data);
-        }
+        // Don't stringify unknown parser objects into binary/base64 noise.
+        if (!extracted) extracted = "";
       } else {
         extracted = String(data || "");
       }
@@ -235,7 +243,8 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
     }
 
     const trimmed = (typeof extracted === 'string' ? extracted : String(extracted || "")).trim();
-    if (trimmed.length < 10 && buffer.length > 1000) {
+    const normalized = looksLikeBinaryOrBase64Blob(trimmed) ? "" : trimmed;
+    if (normalized.length < 10 && buffer.length > 1000) {
       if (ext === ".pdf") {
         // For scanned PDFs, enforce OCR via officeParser's OCR pipeline.
         const ocrText = await parseOfficeToText(filePath, {
@@ -253,7 +262,7 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
       }
       return `[解析内容过空: ${fileName} - 无法提取有效文本]`;
     }
-    return trimmed || `[文件内容为空: ${fileName}]`;
+    return normalized || `[文件内容为空: ${fileName}]`;
   } catch (err: any) {
     console.error(`Serious error parsing ${fileName}:`, err);
     return `[解析出错: ${fileName} - ${err.message}]`;

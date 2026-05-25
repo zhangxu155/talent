@@ -35,3 +35,19 @@ npm run test:pdf
 说明：
 - `LOCAL_VLM_URL` 支持填基础地址（如 `http://127.0.0.1:11434/v1`），脚本会自动补 `/chat/completions`。
 - 若本地模型无需鉴权，可不传 `LOCAL_VLM_API_KEY`。
+
+
+## 6. 手动上传本地 PDF 并让模型总结
+```bash
+# 1) 配置本地模型接口（OpenAI兼容）
+export LOCAL_VLM_URL=http://127.0.0.1:11434/v1
+export LOCAL_VLM_MODEL=qwen2.5-vl:7b
+# export LOCAL_VLM_API_KEY=your_key_if_needed
+
+# 2) 运行脚本（把你的 PDF 路径传进去）
+npm run pdf:cli -- ./your-file.pdf
+```
+脚本会：
+- 读取你传入的 PDF；
+- 打印 PDF 解析结果（前 2000 字）和总长度；
+- 调用本地模型输出 3-5 条总结与风险点。

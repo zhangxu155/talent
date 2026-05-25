@@ -4,6 +4,8 @@ import path from "path";
 import multer from "multer";
 import { v4 as uuidv4 } from "uuid";
 import fs from "fs";
+import os from "os";
+import { execFileSync, spawnSync } from "child_process";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const pdf = require("pdf-parse");
@@ -89,6 +91,54 @@ const ai = new GoogleGenAI({
 });
 
 // --- Helpers ---
+function canUseBinary(cmd: string): boolean {
+  const whichCmd = process.platform === "win32" ? "where" : "which";
+  const probe = spawnSync(whichCmd, [cmd], { stdio: "ignore" });
+  return probe.status === 0;
+}
+
+async function extractPdfTextWithOCR(filePath: string): Promise<string> {
+  const hasPdfToImage = canUseBinary("pdftoppm");
+  const hasTesseract = canUseBinary("tesseract");
+  if (!hasPdfToImage || !hasTesseract) {
+    return "";
+  }
+
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "talent-ocr-"));
+  const pagePrefix = path.join(tmpRoot, "page");
+  const ocrOutPrefix = path.join(tmpRoot, "ocr");
+  let combined = "";
+  try {
+    // 170 DPI is a speed/quality tradeoff for scanned office documents.
+    execFileSync("pdftoppm", ["-r", "170", "-png", filePath, pagePrefix], { stdio: "ignore" });
+    const pages = fs.readdirSync(tmpRoot)
+      .filter((f) => /^page-\d+\.png$/i.test(f))
+      .sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+
+    // Prevent runaway OCR jobs on huge scans.
+    const limitedPages = pages.slice(0, 80);
+    for (let i = 0; i < limitedPages.length; i++) {
+      const page = limitedPages[i];
+      const pagePath = path.join(tmpRoot, page);
+      const outBase = `${ocrOutPrefix}-${i + 1}`;
+      execFileSync("tesseract", [pagePath, outBase, "-l", "chi_sim+eng", "--psm", "6"], { stdio: "ignore" });
+      const txtPath = `${outBase}.txt`;
+      if (fs.existsSync(txtPath)) {
+        const text = fs.readFileSync(txtPath, "utf-8").trim();
+        if (text) combined += `\n\n--- OCR Page ${i + 1} ---\n${text}`;
+      }
+    }
+  } catch (err: any) {
+    console.warn("OCR fallback failed:", err.message);
+    return "";
+  } finally {
+    try {
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    } catch {}
+  }
+  return combined.trim();
+}
+
 async function extractFileText(filePath: string, fileName: string): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
@@ -211,7 +261,11 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
 
     const trimmed = (typeof extracted === 'string' ? extracted : String(extracted || "")).trim();
     if (trimmed.length < 10 && buffer.length > 1000) {
-      if (ext === ".pdf") return `[此 PDF 文件可能是扫描件或图片格式，无法提取文字内容，请上传可编辑版本]`;
+      if (ext === ".pdf") {
+        const ocrText = await extractPdfTextWithOCR(filePath);
+        if (ocrText && ocrText.length >= 10) return ocrText;
+        return `[此 PDF 文件可能是扫描件或图片格式，无法提取文字内容。系统已尝试 OCR 回退但仍未获得有效文本，请确认清晰度或安装 pdftoppm+tesseract 后重试]`;
+      }
       return `[解析内容过空: ${fileName} - 无法提取有效文本]`;
     }
     return trimmed || `[文件内容为空: ${fileName}]`;

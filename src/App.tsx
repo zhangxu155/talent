@@ -843,7 +843,7 @@ export default function App() {
         {
           "summary": "针对该指标的综合审计判断（30-40字，需引用材料事实）",
           "completion_status": "完成/未完成/部分完成",
-          "score": 0-100,
+          "score": 0-120,
           "extracted_evidences": [
              { "title": "证据关键点", "raw_excerpt": "原文核心片段摘录", "summary": "此事实如何证明指标达成（30-40字）", "confidence": 0.95 }
           ]
@@ -884,7 +884,7 @@ export default function App() {
 
         intermediateResults[clause.clause_id] = [{
           conclusion: parsedAudit.summary,
-          score: parsedAudit.score,
+          score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
           completion_status: parsedAudit.completion_status
         }];
       }
@@ -899,7 +899,7 @@ export default function App() {
           title: c.title,
           category: c.category,
           weight: c.weight,
-          score: audit.score || 0,
+          score: Math.max(0, Math.min(120, Number(audit.score) || 0)),
           target_benchmark: c.target_description || "-",
           completion_status: audit.completion_status || "未完成",
           actual_value: audit.conclusion || "无数据",
@@ -970,10 +970,10 @@ export default function App() {
         "fit_score": 0-100,
         "fit_eval": "对该员工岗位适配度的定性评价",
         "radar_data": [
-          { "subject": "培育与协同力", "score": 0-100, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "创新与战略落地力", "score": 0-100, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "产品履约交付力", "score": 0-100, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "技术突破攻坚力", "score": 0-100, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
+          { "subject": "培育与协同力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "创新与战略落地力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "产品履约交付力", "score": 0-120, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "技术突破攻坚力", "score": 0-120, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
         ],
         "strengths": ["优势1", "优势2"],
         "weaknesses": ["改进1", "改进2"],

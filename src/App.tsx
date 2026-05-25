@@ -891,7 +891,15 @@ ${fileContext}
         if (!hasSubstantiveNonMinutes && parsedAudit.completion_status === "完成") {
           parsedAudit.completion_status = "部分完成";
           parsedAudit.score = Math.min(Number(parsedAudit.score) || 0, 79);
-          parsedAudit.summary = `${parsedAudit.summary || ''}（已按规则降级：缺少非纪要实质证据）`;
+        }
+
+        if (!hasSubstantiveNonMinutes) {
+          const noEvidenceFiles = perFileAudits
+            .filter((f: any) => !f.has_substantive_evidence)
+            .map((f: any) => f.file_name)
+            .slice(0, 3)
+            .join('、');
+          parsedAudit.summary = `未发现可直接证明“${clause.title}”达成的非纪要实质证据；重点核查文件：${noEvidenceFiles || '（未识别到有效文件名）'}。`;
         }
 
         const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];

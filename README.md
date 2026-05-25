@@ -18,3 +18,20 @@ npm run dev
 
 ## 4. 数据一致性
 所有数据交换必须符合 `src/types/schema.ts` 定义。
+
+
+## 5. 仅测试 PDF 解析（可选串接本地 VLM）
+```bash
+# 仅验证 PDF 抽取是否成功
+npm run test:pdf
+
+# 串接本地 OpenAI 兼容接口做端到端验证
+ENABLE_VLM_E2E=1 \
+LOCAL_VLM_URL=http://127.0.0.1:11434/v1/chat/completions \
+LOCAL_VLM_MODEL=qwen2.5-vl:7b \
+LOCAL_VLM_API_KEY=your_key_if_needed \
+npm run test:pdf
+```
+说明：
+- `LOCAL_VLM_URL` 支持填基础地址（如 `http://127.0.0.1:11434/v1`），脚本会自动补 `/chat/completions`。
+- 若本地模型无需鉴权，可不传 `LOCAL_VLM_API_KEY`。

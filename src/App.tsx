@@ -2671,12 +2671,7 @@ function ReportView({
             </div>
 
             {/* Value Creation Section */}
-            {(overallSummary?.value_creation_details?.main_desc || 
-              overallSummary?.value_creation_details?.product_projects || 
-              overallSummary?.value_creation_details?.business_revenue || 
-              overallSummary?.value_creation_details?.tech_innovation || 
-              overallSummary?.value_creation_details?.industry_influence) && (
-              <div className="grid grid-cols-12 gap-8">
+            <div className="grid grid-cols-12 gap-8">
                 <div className="col-span-12 lg:col-span-2 bg-indigo-600/90 rounded-[2.5rem] flex flex-col items-center justify-center p-6 shadow-xl border border-indigo-500/20 gap-4">
                   <span className="text-white font-black text-xl lg:[writing-mode:vertical-rl] uppercase tracking-[0.3em] order-2 lg:order-1">价值创造</span>
                   <div className="bg-white/20 backdrop-blur-md rounded-2xl p-2 flex flex-col items-center order-1 lg:order-2">
@@ -2694,6 +2689,13 @@ function ReportView({
                     </div>
                   )}
                   <div className="grid grid-cols-1 md:grid-cols-1 gap-y-3 text-sm text-slate-700 font-bold">
+                    {!(overallSummary?.value_creation_details?.main_desc || 
+                      overallSummary?.value_creation_details?.product_projects || 
+                      overallSummary?.value_creation_details?.business_revenue || 
+                      overallSummary?.value_creation_details?.tech_innovation || 
+                      overallSummary?.value_creation_details?.industry_influence) && (
+                      <div className="text-slate-500 font-medium">不涉及</div>
+                    )}
                     {overallSummary?.value_creation_details?.product_projects && (
                       <div className="flex items-start gap-2">
                         <span className="text-indigo-600 shrink-0">①产品项目:</span>
@@ -2720,8 +2722,7 @@ function ReportView({
                     )}
                   </div>
                 </div>
-              </div>
-            )}
+            </div>
 
             {/* Knowledge Accumulation Section */}
             {knowledge.hasData && (

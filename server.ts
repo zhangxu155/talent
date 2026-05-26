@@ -915,12 +915,24 @@ async function startServer() {
       const task = tasks[req.params.task_id];
       if (!task) return res.status(404).json({ code: 404, message: "Task not found" });
 
-      const name = String(req.query.name || "").trim();
-      if (!name) return res.status(400).json({ code: 400, message: "Missing file name" });
+      const rawName = String(req.query.name || "").trim();
+      if (!rawName) return res.status(400).json({ code: 400, message: "Missing file name" });
 
-      const inDeliverables = (task.deliverable_files || []).find(f => f.name === name);
-      const inContract = task.contract_file?.name === name ? task.contract_file : null;
-      const target = inDeliverables || inContract;
+      const candidates = rawName.split(",").map(s => s.trim()).filter(Boolean);
+      const normalize = (x: string) => x.trim().toLowerCase();
+      const allFiles = [...(task.deliverable_files || []), ...(task.contract_file ? [task.contract_file] : [])];
+
+      let target = null as any;
+      for (const c of candidates) {
+        target = allFiles.find((f: any) => normalize(f.name) === normalize(c));
+        if (target) break;
+      }
+      if (!target) {
+        for (const c of candidates) {
+          target = allFiles.find((f: any) => normalize(f.name).includes(normalize(c)) || normalize(c).includes(normalize(f.name)));
+          if (target) break;
+        }
+      }
 
       if (!target || !target.path || !fs.existsSync(target.path)) {
         return res.status(404).json({ code: 404, message: "File not found" });

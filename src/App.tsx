@@ -2293,7 +2293,8 @@ function ReportView({
 
   const buildDownloadUrl = (sourceName: string) => {
     if (!taskId || !sourceName) return "#";
-    return `/api/v1/evaluation/tasks/${encodeURIComponent(taskId)}/files/download?name=${encodeURIComponent(sourceName)}`;
+    const primaryName = String(sourceName || "").split(",")[0]?.trim() || "";
+    return `/api/v1/evaluation/tasks/${encodeURIComponent(taskId)}/files/download?name=${encodeURIComponent(primaryName)}`;
   };
 
   return (

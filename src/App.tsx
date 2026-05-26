@@ -2923,7 +2923,7 @@ function ReportView({
                                     <div className="space-y-2">
                                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">目标基准 (Expected)</span>
                                       <div className="text-xs text-slate-600 bg-white p-4 rounded-2xl border border-slate-100 font-medium italic leading-relaxed">
-                                        {r.target_value}
+                                        {r.target_benchmark || r.target_value || "-"}
                                       </div>
                                     </div>
                                     <div className="space-y-2">

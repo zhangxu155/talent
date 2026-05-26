@@ -2696,30 +2696,22 @@ function ReportView({
                       overallSummary?.value_creation_details?.industry_influence) && (
                       <div className="text-slate-500 font-medium">不涉及</div>
                     )}
-                    {overallSummary?.value_creation_details?.product_projects && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">①产品项目:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.product_projects.replace(/^①产品项目:\s*/, '')}</p>
-                      </div>
-                    )}
-                    {overallSummary?.value_creation_details?.business_revenue && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">②经营收益:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.business_revenue.replace(/^②经营收益:\s*/, '')}</p>
-                      </div>
-                    )}
-                    {overallSummary?.value_creation_details?.tech_innovation && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">③技术创新:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.tech_innovation.replace(/^③技术创新:\s*/, '')}</p>
-                      </div>
-                    )}
-                    {overallSummary?.value_creation_details?.industry_influence && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">④行业影响:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.industry_influence.replace(/^④行业影响:\s*/, '')}</p>
-                      </div>
-                    )}
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">①产品项目:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.product_projects ? overallSummary?.value_creation_details?.product_projects.replace(/^①产品项目:\s*/, '') : "不涉及"}</p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">②经营收益:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.business_revenue ? overallSummary?.value_creation_details?.business_revenue.replace(/^②经营收益:\s*/, '') : "不涉及"}</p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">③技术创新:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.tech_innovation ? overallSummary?.value_creation_details?.tech_innovation.replace(/^③技术创新:\s*/, '') : "不涉及"}</p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">④行业影响:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.industry_influence ? overallSummary?.value_creation_details?.industry_influence.replace(/^④行业影响:\s*/, '') : "不涉及"}</p>
+                    </div>
                   </div>
                 </div>
             </div>

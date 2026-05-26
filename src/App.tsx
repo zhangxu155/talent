@@ -2297,6 +2297,32 @@ function ReportView({
     return `/api/v1/evaluation/tasks/${encodeURIComponent(taskId)}/files/download?name=${encodeURIComponent(primaryName)}`;
   };
 
+  const triggerAnonymousDownload = async (sourceName: string) => {
+    try {
+      const url = buildDownloadUrl(sourceName);
+      if (url === "#") return;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(txt || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const alias = sourceNameToAlias.get(sourceName) || "交付物";
+      const ext = (String(sourceName).match(/\.[a-zA-Z0-9]+$/)?.[0] || ".bin");
+      const filename = `${alias}${ext}`;
+      const a = document.createElement('a');
+      const obj = URL.createObjectURL(blob);
+      a.href = obj;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(obj);
+    } catch (e: any) {
+      alert(`下载失败: ${e?.message || e}`);
+    }
+  };
+
   return (
     <div className="space-y-8 pb-32">
       {/* Tab Switcher */}
@@ -2952,7 +2978,7 @@ function ReportView({
                                                 </div>
                                                 <div className="space-y-1">
                                                   <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{sourceNameToAlias.get(ev?.source_file_name || "") || "交付物"}</div>
-                                                  <a href={buildDownloadUrl(ev?.source_file_name || "")} target="_blank" rel="noreferrer" className="text-[11px] font-bold text-slate-900 underline decoration-dotted">{ev?.title || eid}</a>
+                                                  <button onClick={() => triggerAnonymousDownload(ev?.source_file_name || "")} className="text-[11px] font-bold text-slate-900 underline decoration-dotted text-left">{ev?.title || eid}</button>
                                                   <p className="text-[10px] text-slate-400 leading-tight italic">"{ev?.summary}"</p>
                                                 </div>
                                               </div>

@@ -909,6 +909,28 @@ async function startServer() {
     res.json({ code: 200 });
   });
 
+
+  app.get("/api/v1/evaluation/tasks/:task_id/files/download", (req, res) => {
+    try {
+      const task = tasks[req.params.task_id];
+      if (!task) return res.status(404).json({ code: 404, message: "Task not found" });
+
+      const name = String(req.query.name || "").trim();
+      if (!name) return res.status(400).json({ code: 400, message: "Missing file name" });
+
+      const inDeliverables = (task.deliverable_files || []).find(f => f.name === name);
+      const inContract = task.contract_file?.name === name ? task.contract_file : null;
+      const target = inDeliverables || inContract;
+
+      if (!target || !target.path || !fs.existsSync(target.path)) {
+        return res.status(404).json({ code: 404, message: "File not found" });
+      }
+      return res.download(target.path, target.name);
+    } catch (e: any) {
+      return res.status(500).json({ code: 500, message: e.message || "Download failed" });
+    }
+  });
+
   app.post("/api/v1/files/upload", upload.single("file"), async (req: any, res) => {
     console.log("Quick upload hit:", req.file?.originalname);
     try {

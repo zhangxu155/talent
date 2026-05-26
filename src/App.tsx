@@ -1385,6 +1385,7 @@ ${fileContext}
                     competencyAnalysis={competencyAnalysis}
                     valueCreation={valueCreation}
                     onReset={handleReset} 
+                    taskId={currentTaskId} 
                   />
                 </motion.div>
               )}
@@ -2126,7 +2127,8 @@ function ReportView({
   setActiveTab,
   competencyAnalysis,
   valueCreation,
-  onReset 
+  onReset,
+  taskId
 }: { 
   overallSummary: any, 
   categoryStats: any[], 
@@ -2137,7 +2139,8 @@ function ReportView({
   setActiveTab: (t: 'overview' | 'details' | 'competency') => void,
   competencyAnalysis: any,
   valueCreation: any,
-  onReset: () => void 
+  onReset: () => void,
+  taskId: string | null
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -2280,6 +2283,18 @@ function ReportView({
   };
 
   const knowledge = getKnowledgeAccumulation();
+
+  const sourceNameToAlias = (() => {
+    const names = Array.from(new Set((evidences || []).map((e: any) => String(e?.source_file_name || "").trim()).filter(Boolean)));
+    const m = new Map<string, string>();
+    names.forEach((n, i) => m.set(n, `交付物${i + 1}`));
+    return m;
+  })();
+
+  const buildDownloadUrl = (sourceName: string) => {
+    if (!taskId || !sourceName) return "#";
+    return `/api/v1/evaluation/tasks/${encodeURIComponent(taskId)}/files/download?name=${encodeURIComponent(sourceName)}`;
+  };
 
   return (
     <div className="space-y-8 pb-32">
@@ -2935,8 +2950,8 @@ function ReportView({
                                                   <FileCheck className="size-4" />
                                                 </div>
                                                 <div className="space-y-1">
-                                                  <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{ev?.source_file_name || "文件溯源"}</div>
-                                                  <div className="text-[11px] font-bold text-slate-900">{ev?.title || eid}</div>
+                                                  <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{sourceNameToAlias.get(ev?.source_file_name || "") || "交付物"}</div>
+                                                  <a href={buildDownloadUrl(ev?.source_file_name || "")} target="_blank" rel="noreferrer" className="text-[11px] font-bold text-slate-900 underline decoration-dotted">{ev?.title || eid}</a>
                                                   <p className="text-[10px] text-slate-400 leading-tight italic">"{ev?.summary}"</p>
                                                 </div>
                                               </div>

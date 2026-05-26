@@ -12,7 +12,6 @@ import mammoth from "mammoth";
 import cors from "cors";
 import { pathToFileURL } from "url";
 import { Decimal } from "decimal.js";
-import { GoogleGenAI } from "@google/genai";
 const XLSX = require("xlsx");
 
 // --- Types ---
@@ -75,25 +74,6 @@ interface EvaluationTask {
 const tasks: Record<string, EvaluationTask> = {};
 
 // --- AI Service ---
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-let ai: GoogleGenAI | null = null;
-
-function getGeminiClient(): GoogleGenAI {
-  if (ai) return ai;
-  if (!GEMINI_API_KEY) {
-    console.warn("WARNING: GEMINI_API_KEY is not set in environment variables. Please check Settings > Secrets.");
-  }
-  ai = new GoogleGenAI({
-    apiKey: GEMINI_API_KEY || "missing-key",
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
-  });
-  return ai;
-}
-
 // --- Helpers ---
 
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
@@ -456,7 +436,7 @@ ${report.report_json.suggestions.map(s => `- ${s}`).join('\n')}
 
 ---
 *报告生成时间: ${new Date().toLocaleString()}*
-*审计引擎: 人才评估智能系统 (基于 Gemini Pro 1.5)*
+*审计引擎: 人才评估智能系统 (本地模型驱动)*
 `;
 
   task.report = {
@@ -476,7 +456,7 @@ async function startServer() {
 
   // AI Config storage
   let aiConfig = { 
-  provider: 'gemini',
+  provider: 'local',
   localUrl: '',
   localModel: '',
   localApiKey: ''
@@ -866,41 +846,6 @@ async function startServer() {
     const { prompt, config } = req.body;
     
     try {
-      if (config.provider === 'gemini') {
-        if (!GEMINI_API_KEY) {
-          return res.status(401).json({ 
-            code: 401, 
-            message: "Gemini API Key 缺失。请在【Settings > Secrets】中添加并配置 GEMINI_API_KEY。" 
-          });
-        }
-
-        console.log(`AI Proxy [Gemini]: Calling gemini-3-flash-preview...`);
-        try {
-          const response = await getGeminiClient().models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-              temperature: 0.2,
-              topP: 0.1,
-            }
-          });
-          const text = response.text || "";
-          console.log(`AI Proxy [Gemini]: Success. Response length: ${text.length}`);
-          return res.json({ code: 200, data: text });
-        } catch (apiErr: any) {
-          console.error("Gemini API Error:", apiErr);
-          // Check for specifically invalid key errors to guide the user
-          const errString = JSON.stringify(apiErr);
-          if (errString.includes("API_KEY_INVALID") || (apiErr.status === 400 && errString.includes("key"))) {
-            return res.status(400).json({ 
-              code: 400, 
-              message: "Gemini API Key 无效。请在【Settings > Secrets】中检查并更新您的 API Key。" 
-            });
-          }
-          throw apiErr; // Fall through to general error handler
-        }
-      }
-
       if (config.provider !== 'local') {
         return res.status(400).json({ code: 400, message: "Unsupported provider." });
       }

@@ -14,7 +14,7 @@ npm run dev
 
 ## 3. 环境变量
 请在根目录创建 `.env` 文件并填入：
-`GEMINI_API_KEY=YOUR_KEY`
+本地部署模式无需 Gemini Key。
 
 ## 4. 数据一致性
 所有数据交换必须符合 `src/types/schema.ts` 定义。

@@ -26,7 +26,6 @@ import {
   AlertTriangle,
   Lightbulb,
   X,
-  Sparkles,
   Cpu,
   ChevronUp,
   ChevronDown,
@@ -245,7 +244,7 @@ async function callAIInFrontend(prompt: string, config: any, retryCount = 0): Pr
     return "[]";
   }
 
-  // Use server proxy for both local and gemini providers to bypass CORS and protect API Keys
+  // Use server proxy for local providers to bypass CORS and protect API keys
   try {
     const response = await fetch('/api/v1/ai/call', {
       method: 'POST',
@@ -464,7 +463,7 @@ export default function App() {
   const [report, setReport] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [aiConfig, setAIConfig] = useState<any>({ 
-    provider: 'gemini',
+    provider: 'local',
     localUrl: '',
     localModel: '',
     localApiKey: ''
@@ -1418,15 +1417,6 @@ ${fileContext}
               <div className="space-y-6">
                 <div className="flex gap-2 p-1 bg-slate-50 rounded-2xl border border-slate-100">
                   <button 
-                    onClick={() => setAIConfig({ ...aiConfig, provider: 'gemini' })}
-                    className={cn(
-                      "flex-1 py-3 rounded-xl font-bold transition-all text-xs lg:text-sm",
-                      aiConfig.provider === 'gemini' ? "bg-white text-indigo-600 shadow-sm border border-slate-100" : "text-slate-400"
-                    )}
-                  >
-                    Google Gemini
-                  </button>
-                  <button 
                     onClick={() => setAIConfig({ ...aiConfig, provider: 'local' })}
                     className={cn(
                       "flex-1 py-3 rounded-xl font-bold transition-all text-xs lg:text-sm",
@@ -1481,18 +1471,6 @@ ${fileContext}
                       value={aiConfig.localApiKey}
                       onChange={(e: any) => setAIConfig({ ...aiConfig, localApiKey: e.target.value })}
                     />
-                  </div>
-                )}
-
-                {aiConfig.provider === 'gemini' && (
-                  <div className="p-6 bg-indigo-50/50 rounded-3xl border border-indigo-100 flex items-start gap-4">
-                    <div className="bg-indigo-600 p-2 rounded-xl text-white">
-                      <Sparkles className="size-5" />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-indigo-900 text-sm">AI Studio 原生引擎 (Gemini 3 Pro/Flash)</h4>
-                      <p className="text-indigo-600/70 text-[10px] uppercase font-bold tracking-widest mt-1">无需额外配置，自动通过 AI Studio 平台调用最先进的多模态分析能力。</p>
-                    </div>
                   </div>
                 )}
               </div>
@@ -1911,7 +1889,7 @@ function TaskStatusView({ status, onReset }: { status: any, onReset?: () => void
           <p className="text-slate-500 mt-2 font-mono uppercase tracking-widest text-xs">
             {isFailed 
               ? "错误：AI 分析被中断" 
-              : `引擎: ${status?.ai_provider === 'local' ? '本地大模型' : status?.ai_provider === 'mock' ? '系统演示' : 'Gemini 3'}`
+              : `引擎: ${status?.ai_provider === 'local' ? '本地大模型' : status?.ai_provider === 'mock' ? '系统演示' : '本地大模型'}`
             }
             {!isFailed && <span className="bg-indigo-100 text-indigo-600 px-1 py-0.5 rounded ml-1">
               {status?.ai_provider === 'local' ? '私有化部署' : status?.ai_provider === 'mock' ? '离线逻辑' : 'AI Studio 原生'}
@@ -2499,7 +2477,7 @@ function ReportView({
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                           <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                            <Sparkles className="size-3 text-indigo-600" /> 核心优势
+                            <Lightbulb className="size-3 text-indigo-600" /> 核心优势
                           </h4>
                           <div className="text-xs text-slate-700 font-semibold space-y-2 whitespace-pre-wrap leading-relaxed">
                             {overallSummary?.core_strengths}
@@ -2683,7 +2661,7 @@ function ReportView({
                   {overallSummary?.value_creation_details?.main_desc && (
                     <div className="space-y-2">
                       <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                        <Sparkles className="size-4 text-indigo-600" />
+                        <Lightbulb className="size-4 text-indigo-600" />
                         价值创造总结: <span className="font-medium text-slate-600">{overallSummary.value_creation_details.main_desc}</span>
                       </h4>
                     </div>

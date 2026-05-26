@@ -2969,21 +2969,34 @@ function ReportView({
                                            <LinkIcon className="size-3" /> 里程碑佐证链 (Evidence Bundle)
                                         </h6>
                                         <div className="grid grid-cols-1 gap-3">
-                                          {r.matched_evidence_ids?.map((eid: string) => {
-                                            const ev = evidences.find(e => e.evidence_id === eid);
-                                            return (
-                                              <div key={eid} className="bg-white p-4 rounded-2xl border border-indigo-50 flex items-start gap-4">
-                                                <div className="bg-indigo-600 text-white p-2 rounded-xl shrink-0">
-                                                  <FileCheck className="size-4" />
+                                          {(() => {
+                                            const milestoneList = (r?.metadata?.milestones || [])
+                                              .map((m: any) => m?.content)
+                                              .filter(Boolean);
+                                            const milestoneText = milestoneList.length > 0
+                                              ? milestoneList.slice(0, 2).join('；')
+                                              : "该指标里程碑节点";
+                                            const supportAliases = Array.from(new Set((r.matched_evidence_ids || []).map((mid: string) => {
+                                              const mev = evidences.find((e: any) => e.evidence_id === mid);
+                                              return sourceNameToAlias.get(mev?.source_file_name || "") || "交付物";
+                                            })));
+                                            const supportText = supportAliases.join('、') || '交付物';
+                                            return r.matched_evidence_ids?.map((eid: string) => {
+                                              const ev = evidences.find(e => e.evidence_id === eid);
+                                              return (
+                                                <div key={eid} className="bg-white p-4 rounded-2xl border border-indigo-50 flex items-start gap-4">
+                                                  <div className="bg-indigo-600 text-white p-2 rounded-xl shrink-0">
+                                                    <FileCheck className="size-4" />
+                                                  </div>
+                                                  <div className="space-y-1">
+                                                    <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{sourceNameToAlias.get(ev?.source_file_name || "") || "交付物"}</div>
+                                                    <button onClick={() => triggerAnonymousDownload(ev?.source_file_name || "")} className="text-[11px] font-bold text-slate-900 underline decoration-dotted text-left">{ev?.title || eid}</button>
+                                                    <p className="text-[10px] text-slate-500 leading-tight italic">可佐证里程碑节点：{milestoneText}；佐证交付物：{supportText}。</p>
+                                                  </div>
                                                 </div>
-                                                <div className="space-y-1">
-                                                  <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{sourceNameToAlias.get(ev?.source_file_name || "") || "交付物"}</div>
-                                                  <button onClick={() => triggerAnonymousDownload(ev?.source_file_name || "")} className="text-[11px] font-bold text-slate-900 underline decoration-dotted text-left">{ev?.title || eid}</button>
-                                                  <p className="text-[10px] text-slate-500 leading-tight italic">里程碑节点「{ev?.title || "未命名节点"}」可由该交付物佐证；依据："{ev?.summary || "无"}"</p>
-                                                </div>
-                                              </div>
-                                            );
-                                          })}
+                                              );
+                                            });
+                                          })()}
                                         </div>
                                       </div>
                                     </div>

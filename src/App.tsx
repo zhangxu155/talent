@@ -878,7 +878,7 @@ ${fileContext}
 
 已知 hasSubstantiveNonMinutes=${hasSubstantiveNonMinutes}.
 
-输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"证据点","raw_excerpt":"原文","summary":"说明","confidence":0.9,"source_file_name":"文件名"}] }`;
+输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"里程碑节点","raw_excerpt":"原文","summary":"该里程碑节点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
 
         let aggResp = "";
         try {
@@ -2966,7 +2966,7 @@ function ReportView({
                                       </div>
                                       <div className="space-y-4">
                                         <h6 className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-2">
-                                           <LinkIcon className="size-3" /> 归因证据链 (Evidence Bundle)
+                                           <LinkIcon className="size-3" /> 里程碑佐证链 (Evidence Bundle)
                                         </h6>
                                         <div className="grid grid-cols-1 gap-3">
                                           {r.matched_evidence_ids?.map((eid: string) => {
@@ -2979,7 +2979,7 @@ function ReportView({
                                                 <div className="space-y-1">
                                                   <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{sourceNameToAlias.get(ev?.source_file_name || "") || "交付物"}</div>
                                                   <button onClick={() => triggerAnonymousDownload(ev?.source_file_name || "")} className="text-[11px] font-bold text-slate-900 underline decoration-dotted text-left">{ev?.title || eid}</button>
-                                                  <p className="text-[10px] text-slate-400 leading-tight italic">"{ev?.summary}"</p>
+                                                  <p className="text-[10px] text-slate-500 leading-tight italic">里程碑节点「{ev?.title || "未命名节点"}」可由该交付物佐证；依据："{ev?.summary || "无"}"</p>
                                                 </div>
                                               </div>
                                             );

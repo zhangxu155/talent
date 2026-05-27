@@ -76,6 +76,22 @@ const tasks: Record<string, EvaluationTask> = {};
 // --- AI Service ---
 // --- Helpers ---
 
+function normalizeUploadFileName(name: string): string {
+  const raw = String(name || "");
+  // only try latin1->utf8 fix when typical mojibake patterns exist
+  const looksMojibake = /[ÃÂâæåçéèêëîïôöûüÿ]|å|æ|ç|é|ä|ö|ü/.test(raw);
+  if (!looksMojibake) return raw;
+  try {
+    const decoded = Buffer.from(raw, 'latin1').toString('utf8');
+    // accept decoded only if it contains readable CJK or common filename chars
+    if (/[一-龥A-Za-z0-9_.\-()（）\s]/.test(decoded)) return decoded;
+    return raw;
+  } catch {
+    return raw;
+  }
+}
+
+
 function toDataUrl(buffer: Buffer, mimeType: string): string {
   return `data:${mimeType};base64,${buffer.toString("base64")}`;
 }
@@ -614,7 +630,7 @@ async function startServer() {
 
       const newFiles = (req.files || []).map((f: any) => {
         try {
-          f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
+          f.originalname = normalizeUploadFileName(f.originalname);
         } catch(e) {}
         return f;
       });
@@ -682,7 +698,7 @@ async function startServer() {
       let contractText = contract_text || "";
       if (req.files?.contract?.[0]) {
         const f = req.files.contract[0];
-        f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
+        f.originalname = normalizeUploadFileName(f.originalname);
         contractText = await extractFileText(f.path, f.originalname);
       }
 
@@ -717,7 +733,7 @@ async function startServer() {
         const deliverables: { name: string; text: string }[] = [];
         if (req.files?.deliverables) {
           for (const f of req.files.deliverables) {
-            f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
+            f.originalname = normalizeUploadFileName(f.originalname);
             const text = await extractFileText(f.path, f.originalname);
             deliverables.push({ name: f.originalname, text });
           }
@@ -1047,15 +1063,16 @@ async function startServer() {
   });
 
   app.post("/api/v1/files/upload", upload.single("file"), async (req: any, res) => {
-    console.log("Quick upload hit:", req.file?.originalname);
     try {
+      if (req.file?.originalname) req.file.originalname = normalizeUploadFileName(req.file.originalname);
+      console.log("Quick upload hit:", req.file?.originalname);
       if (!req.file) {
         console.error("Quick upload: No file attached");
         return res.status(400).json({ code: 400, message: "No file uploaded" });
       }
       const f = req.file;
       try {
-        f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
+        f.originalname = normalizeUploadFileName(f.originalname);
       } catch (err) {
         console.warn("Filename decoding failed, using raw name", err);
       }

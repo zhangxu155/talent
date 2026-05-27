@@ -130,6 +130,51 @@ async function extractImageTextWithVLM(filePath: string, fileName: string): Prom
 }
 
 
+
+async function extractPdfTextWithVLM(filePath: string, fileName: string): Promise<string> {
+  const vlmUrl = process.env.LOCAL_VLM_URL || "";
+  const vlmModel = process.env.LOCAL_VLM_MODEL || "faw-vlm";
+  const vlmKey = process.env.LOCAL_VLM_API_KEY || "";
+  if (!vlmUrl) return "";
+
+  const fileBuf = fs.readFileSync(filePath);
+  const pdfDataUrl = toDataUrl(fileBuf, "application/pdf");
+
+  let targetUrl = vlmUrl;
+  if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/completions')) {
+    targetUrl = targetUrl.endsWith('/') ? targetUrl + 'chat/completions' : targetUrl + '/chat/completions';
+  }
+
+  const payload = {
+    model: vlmModel,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: pdfDataUrl } },
+        { type: "text", text: `请解析该PDF文档并提取完整可读文本与关键结构信息（标题、小节、表格要点）。不要编造。文件名：${fileName}` }
+      ]
+    }],
+    temperature: 0.1,
+    max_tokens: 4096
+  } as any;
+
+  try {
+    const resp = await fetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(vlmKey ? { "Authorization": `Bearer ${vlmKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) return "";
+    const json = await resp.json() as any;
+    return String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
   // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
   return parseOfficeToText(filePath, {
@@ -301,7 +346,9 @@ export async function extractFileText(filePath: string, fileName: string): Promi
           }
         });
         if (ocrText && ocrText.length >= 10) return ocrText;
-        return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR回退但仍未获得有效文本，建议先转为PNG后上传或提高扫描质量]`;
+        const vlmPdfText = await extractPdfTextWithVLM(filePath, fileName);
+        if (vlmPdfText && vlmPdfText.length >= 10) return vlmPdfText;
+        return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR与本地VLM回退但仍未获得有效文本，请提高扫描质量或改传高分辨率图片]`;
       }
       if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
         const vlmText = await extractImageTextWithVLM(filePath, fileName);

@@ -1183,18 +1183,35 @@ ${fileContext}
         "产品履约交付力",
         "技术突破攻坚力"
       ];
-      const modelDims = extractCapabilityItemsFromText(capabilityText)
-        .filter((d) => !coreRadarDims.includes(d));
+      const modelDims = [
+        "车辆动力学性能分析优化能力",
+        "车辆动力学性能目标定义能力",
+        "车辆动力学性能标准规范制定能力",
+        "车辆动力学性能规划能力"
+      ];
       const dimPool = [...coreRadarDims, ...modelDims];
       console.log("[CAPABILITY][DIM_EXTRACT]", {
         capability_text_preview: capabilityText.substring(0, 400),
         extracted_model_dims: modelDims,
         final_dim_pool: dimPool
       });
-      const dimRulesText = modelDims.length > 0
-        ? `除四个核心维度外，必须额外包含以下能力模型维度（逐项一一输出，不得遗漏、不得改名）：
-${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
-        : `能力模型中未稳定提取到额外维度，请仅输出四个核心维度。`;
+      const dimRulesText = `除四个核心维度外，必须额外包含以下四个固定维度（逐项一一输出，不得遗漏、不得改名）：
+1. 车辆动力学性能分析优化能力
+定义：
+- 定性：精通车辆动力学性能方案分析优化及性能平衡与决策能力；具备制定专业级的性能优化方案、并完成相关文件批准的能力
+- 定量：至少完成1次车辆动力学性能的仿真分析批准
+2. 车辆动力学性能目标定义能力
+定义：
+- 定性：精通车辆动力学性能目标定义；精通车辆动力学特征目录解读评估，及根据主观目标定义客观目标的能力；具备指导团队完成性能目标设定工作，并完成相关报告批准的能力
+- 定量：至少完成1次车辆动力学性能工程目标定义批准
+3. 车辆动力学性能标准规范制定能力
+定义：
+- 定性：精通车辆动力学相关法律法规及体系标准，具备根据专业需求制定企业级标准规范的能力
+- 定量：制定1篇企业级标准规范
+4. 车辆动力学性能规划能力
+定义：
+- 定性：具备车辆动力学性能规划能力；具备统筹内外部资源进行车辆动力学技术洞察和用户需求洞察，并完成相关文件批准的能力
+- 定量：至少完成1次性能规划`;
 
       const dimSchemaText = dimPool.map((d, idx) => {
         const baseline = idx < 2 ? 80 : idx === 2 ? 85 : idx === 3 ? 90 : 80;

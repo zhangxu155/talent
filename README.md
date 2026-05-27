@@ -3,6 +3,8 @@
 ## 1. 研发启动
 ```bash
 npm install
+npm run setup:ocr-deps   # 首次建议执行：安装 pdftoppm/tesseract 系统依赖
+npm run check:ocr-deps   # 检查 OCR 依赖是否就绪
 npm run dev
 ```
 

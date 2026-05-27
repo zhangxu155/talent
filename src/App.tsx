@@ -364,6 +364,19 @@ function extractCapabilityItemsFromText(text: string): string[] {
       .map((c) => c.replace(/^"|"$/g, "").trim());
     return cells;
   };
+  const normalizeAbilityItem = (v: string): string => String(v || "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/[“”"'`{}[\]<>]/g, "")
+    .replace(/^[①②③④⑤⑥⑦⑧⑨⑩\d\.\、\)\(（）：:、\s]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const isCleanAbilityItem = (v: string): boolean => {
+    if (!v) return false;
+    if (v.length < 2 || v.length > 18) return false;
+    if (/[：:，,。；;]/.test(v)) return false;
+    if (/(定性|定量|描述|要求|方法|工具|知识|完成|至少|负责|能力项)/.test(v)) return false;
+    return true;
+  };
 
   // Priority path 0: parse extracted CSV blocks and only take "能力项" column.
   // server extracts xlsx/xls as:
@@ -380,15 +393,15 @@ function extractCapabilityItemsFromText(text: string): string[] {
     if (headerIdx !== -1) {
       const headerCells = parseCsvRow(csvLines[headerIdx]);
       const abilityColIdx = headerCells.findIndex((c) => /能力项/.test(c));
+      const serialColIdx = headerCells.findIndex((c) => /序号/.test(c));
       if (abilityColIdx !== -1) {
         const fromCsv = csvLines
           .slice(headerIdx + 1)
           .map(parseCsvRow)
           .filter((cells) => cells.length > abilityColIdx)
-          .map((cells) => String(cells[abilityColIdx] || "").trim())
-          .map((v) => v.replace(/^[-:：\s]+|[-:：\s]+$/g, "").trim())
-          .filter((v) => v && !/^[-—–]+$/.test(v) && !/(能力项|序号|描述|要求)/.test(v))
-          .filter((v) => v.length >= 2 && v.length <= 24);
+          .filter((cells) => serialColIdx === -1 || /^\d+$/.test(String(cells[serialColIdx] || "").trim()))
+          .map((cells) => normalizeAbilityItem(String(cells[abilityColIdx] || "")))
+          .filter((v) => isCleanAbilityItem(v));
         const dedupCsv = Array.from(new Set(fromCsv));
         if (dedupCsv.length > 0) return dedupCsv.slice(0, 30);
       }
@@ -413,10 +426,8 @@ function extractCapabilityItemsFromText(text: string): string[] {
           .slice(headerIdx + 1)
           .map(splitRow)
           .filter(cells => cells.length > abilityColIdx)
-          .map(cells => cells[abilityColIdx])
-          .map(v => v.replace(/^[-:：\s]+|[-:：\s]+$/g, "").trim())
-          .filter(v => v && !/^[-—–]+$/.test(v) && !/(能力项|序号|描述|要求)/.test(v))
-          .filter(v => v.length >= 2 && v.length <= 24);
+          .map(cells => normalizeAbilityItem(cells[abilityColIdx]))
+          .filter(v => isCleanAbilityItem(v));
         const dedupTable = Array.from(new Set(fromTable));
         if (dedupTable.length > 0) return dedupTable.slice(0, 20);
       }

@@ -140,7 +140,10 @@ async function runTesseractOCR(imagePath: string): Promise<string> {
 async function extractPdfTextWithVLMByPages(filePath: string, fileName: string): Promise<string> {
   const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig();
   const targetUrl = resolveChatCompletionsUrl(rawUrl);
-  if (!targetUrl) return "";
+  if (!targetUrl) {
+    console.warn(`[VLM][PDF] skipped for ${fileName}: missing VLM URL env (LOCAL_VLM_URL / VLM_URL / QWEN_API_URL)`);
+    return "";
+  }
 
   let pageImages: string[] = [];
   try {
@@ -208,7 +211,10 @@ function toDataUrl(buffer: Buffer, mimeType: string): string {
 async function extractImageTextWithVLM(filePath: string, fileName: string): Promise<string> {
   const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig();
   const targetUrl = resolveChatCompletionsUrl(rawUrl);
-  if (!targetUrl) return "";
+  if (!targetUrl) {
+    console.warn(`[VLM][IMAGE] skipped for ${fileName}: missing VLM URL env (LOCAL_VLM_URL / VLM_URL / QWEN_API_URL)`);
+    return "";
+  }
 
   const ext = path.extname(fileName).toLowerCase();
   const mimeMap: Record<string, string> = {
@@ -258,7 +264,10 @@ async function extractImageTextWithVLM(filePath: string, fileName: string): Prom
 async function extractPdfTextWithVLM(filePath: string, fileName: string): Promise<string> {
   const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig();
   const targetUrl = resolveChatCompletionsUrl(rawUrl);
-  if (!targetUrl) return "";
+  if (!targetUrl) {
+    console.warn(`[VLM][PDF][full] skipped for ${fileName}: missing VLM URL env (LOCAL_VLM_URL / VLM_URL / QWEN_API_URL)`);
+    return "";
+  }
 
   const fileBuf = fs.readFileSync(filePath);
   const pdfDataUrl = toDataUrl(fileBuf, "application/pdf");
@@ -469,9 +478,12 @@ export async function extractFileText(filePath: string, fileName: string): Promi
           }
         });
         if (ocrText && ocrText.length >= 10) return ocrText;
+        console.warn(`[PARSE][PDF] officeParser OCR too short for ${fileName}: len=${(ocrText || "").length}`);
         let vlmPdfText = await extractPdfTextWithVLMByPages(filePath, fileName);
+        console.warn(`[PARSE][PDF] VLM page fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
         if (!vlmPdfText || vlmPdfText.length < 10) {
           vlmPdfText = await extractPdfTextWithVLM(filePath, fileName);
+          console.warn(`[PARSE][PDF] VLM full fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
         }
         if (vlmPdfText && vlmPdfText.length >= 10) return vlmPdfText;
         return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR与本地VLM回退但仍未获得有效文本，请提高扫描质量或改传高分辨率图片]`;

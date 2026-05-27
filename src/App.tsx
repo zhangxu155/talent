@@ -380,6 +380,22 @@ function extractCapabilityItemsFromText(text: string): string[] {
   return Array.from(new Set(cleaned)).slice(0, 12);
 }
 
+function pickCapabilityModelTextOnly(jdCombinedText: string): string {
+  const raw = String(jdCombinedText || "");
+  if (!raw.trim()) return "";
+  const sections = raw.split(/\n{2,}--- JD\/Model: /).filter(Boolean);
+  const matched: string[] = [];
+
+  for (const sec of sections) {
+    const nl = sec.indexOf("\n");
+    if (nl === -1) continue;
+    const fileName = sec.slice(0, nl).trim();
+    const body = sec.slice(nl + 1).trim();
+    if (/能力模型/.test(fileName) && body) matched.push(body);
+  }
+  return matched.join("\n\n");
+}
+
 function normalizeRadarData(data: any, requiredDims: string[]) {
   const arr = Array.isArray(data) ? data : [];
   const bySubject = new Map<string, any>();
@@ -788,9 +804,10 @@ export default function App() {
 
     const finalContractText = isManualEdit ? manualContractText : (contractPreview?.text || "");
     const jdText = (form.elements.namedItem('jd_text') as HTMLInputElement).value;
+    const capabilityModelText = pickCapabilityModelTextOnly(jdText);
     const resText = (form.elements.namedItem('resume_text') as HTMLInputElement).value;
     
-    setCapabilityText(jdText);
+    setCapabilityText(capabilityModelText || "");
     setResumeText(resText);
     setManualContractText(finalContractText);
 

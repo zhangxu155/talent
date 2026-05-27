@@ -373,9 +373,37 @@ function extractCapabilityItemsFromText(text: string): string[] {
     )
     .filter(line => line.length >= 2 && line.length <= 24)
     .filter(line => !blacklist.test(line))
-    .filter(line => /[能力力性度思维协同交付创新战略突破攻坚管理沟通规划架构产品技术业务]/.test(line));
+    .filter(line => /[能力力性度思维协同交付创新战略突破攻坚管理沟通规划架构产品技术业务]/.test(line))
+    .map(line => line.replace(/[“”"'`{}[\]<>]/g, "").trim())
+    .filter(Boolean);
 
   return Array.from(new Set(cleaned)).slice(0, 12);
+}
+
+function normalizeRadarData(data: any, requiredDims: string[]) {
+  const arr = Array.isArray(data) ? data : [];
+  const bySubject = new Map<string, any>();
+
+  for (const item of arr) {
+    const subject = String(item?.subject || "").trim();
+    if (!subject) continue;
+    if (!bySubject.has(subject)) bySubject.set(subject, item);
+  }
+
+  const result = requiredDims.map((subject, idx) => {
+    const existing = bySubject.get(subject) || {};
+    const baseline = idx < 2 ? 80 : idx === 2 ? 85 : idx === 3 ? 90 : 80;
+    return {
+      subject,
+      score: Math.max(0, Math.min(120, Number(existing.score) || 0)),
+      baseline: Math.max(0, Math.min(120, Number(existing.baseline) || baseline)),
+      conclusion: String(existing.conclusion || "能力表现稳定，符合岗位预期要求。"),
+      evidence: String(existing.evidence || "当前证据链对该维度有基础支撑，建议持续补强量化成果。"),
+      logic: String(existing.logic || "综合岗位要求、实际交付与协同表现进行评估。")
+    };
+  });
+
+  return result;
 }
 
 // --- API Client ---
@@ -1118,8 +1146,28 @@ ${dimSchemaText}
       try {
         const compResp = await api.callAI(compPrompt, aiConfig);
         const parsed = extractJSON(compResp);
-        if (parsed && parsed.fit_score !== undefined) compAnalysis = parsed;
+        if (parsed && (parsed.fit_score !== undefined || Array.isArray(parsed.radar_data))) {
+          compAnalysis = {
+            ...compAnalysis,
+            ...parsed
+          };
+        }
       } catch (e) { console.error("Competency Analysis AI failed:", e); }
+      compAnalysis.radar_data = normalizeRadarData(compAnalysis.radar_data, dimPool);
+      compAnalysis.fit_score = Math.max(
+        0,
+        Math.min(
+          100,
+          Number(compAnalysis.fit_score) ||
+            Math.round(
+              compAnalysis.radar_data.reduce((acc: number, d: any) => acc + (Number(d.score) || 0), 0) /
+              Math.max(1, compAnalysis.radar_data.length)
+            )
+        )
+      );
+      compAnalysis.fit_eval = String(compAnalysis.fit_eval || "基于岗位要求与交付证据，已完成能力匹配评估。");
+      compAnalysis.potential_level = String(compAnalysis.potential_level || "B");
+      compAnalysis.recommendation = String(compAnalysis.recommendation || "建议围绕关键维度持续补强证据闭环。");
       setCompetencyAnalysis(compAnalysis);
 
       const auditContext = resList.map(r => ({

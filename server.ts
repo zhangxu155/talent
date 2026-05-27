@@ -348,8 +348,10 @@ function looksLikeBinaryOrBase64Blob(text: string): boolean {
 export async function extractFileText(filePath: string, fileName: string): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
+  const traceId = `TRACE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   
   try {
+    console.log(`[PARSE][${traceId}] start file=${fileName} ext=${ext} size=${buffer.length}`);
     let extracted = "";
     if (ext === ".pdf") {
       // Robust PDF parser resolution based on logged keys
@@ -424,9 +426,11 @@ export async function extractFileText(filePath: string, fileName: string): Promi
       // Integration hardening for real business PDFs:
       // if parser returns empty/garbled text, try OCR fallback so upload flow remains usable.
       const cleanedPdfText = String(extracted || "").trim();
+      console.log(`[PARSE][${traceId}] pdf parser raw length=${cleanedPdfText.length} binaryLike=${looksLikeBinaryOrBase64Blob(cleanedPdfText)}`);
       if (!cleanedPdfText || looksLikeBinaryOrBase64Blob(cleanedPdfText)) {
-        console.warn("PDF text empty/garbled, fallback to OCR pipeline");
+        console.warn(`[PARSE][${traceId}] PDF text empty/garbled, fallback to OCR pipeline`);
         const ocrText = await extractImageTextWithOCR(filePath);
+        console.warn(`[PARSE][${traceId}] OCR pipeline length=${(ocrText || "").length} binaryLike=${looksLikeBinaryOrBase64Blob(String(ocrText || ""))}`);
         if (ocrText && !looksLikeBinaryOrBase64Blob(ocrText)) {
           extracted = ocrText;
         } else if (!cleanedPdfText && ocrText) {
@@ -467,8 +471,10 @@ export async function extractFileText(filePath: string, fileName: string): Promi
 
     const trimmed = (typeof extracted === 'string' ? extracted : String(extracted || "")).trim();
     const normalized = looksLikeBinaryOrBase64Blob(trimmed) ? "" : trimmed;
+    console.log(`[PARSE][${traceId}] normalized length=${normalized.length} ext=${ext}`);
     if (normalized.length < 10 && buffer.length > 1000) {
       if (ext === ".pdf") {
+        console.warn(`[PARSE][${traceId}] entering deep PDF fallback chain (office OCR -> VLM pages -> VLM full)`);
         // For scanned PDFs, enforce OCR via officeParser's OCR pipeline.
         const ocrText = await parseOfficeToText(filePath, {
           ocr: true,
@@ -477,15 +483,22 @@ export async function extractFileText(filePath: string, fileName: string): Promi
             autoTerminateTimeout: 3000
           }
         });
-        if (ocrText && ocrText.length >= 10) return ocrText;
-        console.warn(`[PARSE][PDF] officeParser OCR too short for ${fileName}: len=${(ocrText || "").length}`);
+        if (ocrText && ocrText.length >= 10) {
+          console.warn(`[PARSE][${traceId}] deep OCR success len=${ocrText.length}`);
+          return ocrText;
+        }
+        console.warn(`[PARSE][${traceId}] officeParser OCR too short for ${fileName}: len=${(ocrText || "").length}`);
         let vlmPdfText = await extractPdfTextWithVLMByPages(filePath, fileName);
-        console.warn(`[PARSE][PDF] VLM page fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
+        console.warn(`[PARSE][${traceId}] VLM page fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
         if (!vlmPdfText || vlmPdfText.length < 10) {
           vlmPdfText = await extractPdfTextWithVLM(filePath, fileName);
-          console.warn(`[PARSE][PDF] VLM full fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
+          console.warn(`[PARSE][${traceId}] VLM full fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
         }
-        if (vlmPdfText && vlmPdfText.length >= 10) return vlmPdfText;
+        if (vlmPdfText && vlmPdfText.length >= 10) {
+          console.warn(`[PARSE][${traceId}] deep VLM success len=${vlmPdfText.length}`);
+          return vlmPdfText;
+        }
+        console.warn(`[PARSE][${traceId}] deep fallback failed, returning scanned-pdf hint`);
         return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR与本地VLM回退但仍未获得有效文本，请提高扫描质量或改传高分辨率图片]`;
       }
       if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {

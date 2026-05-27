@@ -474,15 +474,15 @@ function extractCapabilityItemsFromText(text: string): string[] {
 function pickCapabilityModelTextOnly(jdCombinedText: string): string {
   const raw = String(jdCombinedText || "");
   if (!raw.trim()) return "";
-  const sections = raw.split(/\n{2,}--- JD\/Model: /).filter(Boolean);
   const matched: string[] = [];
-
-  for (const sec of sections) {
-    const nl = sec.indexOf("\n");
-    if (nl === -1) continue;
-    const fileName = sec.slice(0, nl).trim();
-    const body = sec.slice(nl + 1).trim();
-    if (/能力模型/.test(fileName) && body) matched.push(body);
+  const sectionRegex = /--- JD\/Model:\s*(.+?)\s*---\n([\s\S]*?)(?=\n{2,}--- JD\/Model:|\s*$)/g;
+  let m: RegExpExecArray | null = null;
+  while ((m = sectionRegex.exec(raw)) !== null) {
+    const fileName = String(m[1] || "").trim();
+    const body = String(m[2] || "").trim();
+    if (/能力模型/.test(fileName) && body) {
+      matched.push(body);
+    }
   }
   return matched.join("\n\n");
 }

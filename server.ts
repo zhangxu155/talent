@@ -1055,6 +1055,7 @@ async function startServer() {
       evaluation_period, assessment_period,
       clauses, results, evidences, 
       category_stats, competency_analysis,
+      debug_capability_dims,
       overall_summary, value_creation,
       status 
     } = req.body;
@@ -1081,6 +1082,9 @@ async function startServer() {
     if (overall_summary) task.overall_summary = overall_summary;
     if (value_creation) task.value_creation = value_creation;
     if (status) task.status = status;
+    if (debug_capability_dims) {
+      console.log(`[CAPABILITY][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
 
     console.log(`Upserted Task ${task_id}: status=${task.status}, clauses=${task.clauses?.length}`);
     res.json({ code: 200, message: "Upsert successful", task_id });

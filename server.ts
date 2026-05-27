@@ -318,7 +318,34 @@ async function extractPdfTextWithVLM(filePath: string, fileName: string, runtime
 }
 
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
-  // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
+  const ext = path.extname(filePath).toLowerCase();
+
+  // Align runtime OCR behavior with the standalone OCR script:
+  // PDF -> pdftoppm -> tesseract(page by page) -> merged text.
+  if (ext === ".pdf") {
+    let pageImages: string[] = [];
+    try {
+      pageImages = await pdfToImagesWithPdftoppm(filePath, 180);
+      if (pageImages.length === 0) return "";
+
+      const pageTexts: string[] = [];
+      for (let i = 0; i < pageImages.length; i++) {
+        const pageNo = i + 1;
+        const ocr = await runTesseractOCR(pageImages[i]);
+        if (!ocr) continue;
+        pageTexts.push(`# 第 ${pageNo} 页\n\n${ocr}`);
+      }
+      return pageTexts.join("\n\n").trim();
+    } catch (err: any) {
+      console.warn(`[OCR][PDF] pdftoppm+tesseract pipeline failed: ${String(err?.message || err)}`);
+      return "";
+    } finally {
+      const dirs = new Set(pageImages.map(p => path.dirname(p)));
+      dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true }));
+    }
+  }
+
+  // Non-PDF files keep using officeParser OCR fallback.
   return parseOfficeToText(filePath, {
     ocr: true,
     ocrConfig: {

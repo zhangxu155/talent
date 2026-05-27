@@ -26,7 +26,6 @@ import {
   AlertTriangle,
   Lightbulb,
   X,
-  Sparkles,
   Cpu,
   ChevronUp,
   ChevronDown,
@@ -140,14 +139,14 @@ function compressTextForLocalModel(text: string, clauseTitle: string, clauseDesc
   
   // 1. 本地扫描件/图片格式处理逻辑说明与高融合度提示
   if (text.includes("此 PDF 文件可能是扫描件或图片格式")) {
-    return `[本地模型交付物预警] 文件 ${fileName} 在离线私有化部署环境下属于纯图片扫描件，无有效可读文本内容。
-此时由于本地本地解析解析引擎（如 pdf-parse）不原生支持图片识别导致文本缺失，推荐以下解决办法：
-1. 生产环境中，建议在此系统的前端或后端（server.ts）中引入 Tesseract.js / EasyOCR 或通过 Python (pdfplumber/pdf2image) 配合 OCR 框架，将扫描件识别出文本后再传入模型；
-2. 针对本审计实例的解析逻辑：检测到此附件名称为“${fileName}”，此标题格式极高程度命中了当前需要核验的合同指标【${clauseTitle}】。本地模型将视此“命名完全匹配的附加材料”为该指标的客观交付凭证之一。`;
+    // 保留原始文本，不再仅用文件名提示替代，避免“只剩文件名”导致证据丢失。
+    return `${text}
+
+[解析提示] 文件名: ${fileName}；关联指标: ${clauseTitle}`;
   }
 
   // 本地大模型上下文大小限制（字符流控制在 4000 个字符安全极限内，折合约 2000-2500 左右 Token，极为安全且专注）
-  const maxLocalChars = 4000;
+  const maxLocalChars = 16000;
   if (text.length <= maxLocalChars) {
     return text; // 短少文档直接返回，不再浪费计算
   }
@@ -245,7 +244,7 @@ async function callAIInFrontend(prompt: string, config: any, retryCount = 0): Pr
     return "[]";
   }
 
-  // Use server proxy for both local and gemini providers to bypass CORS and protect API Keys
+  // Use server proxy for local providers to bypass CORS and protect API keys
   try {
     const response = await fetch('/api/v1/ai/call', {
       method: 'POST',
@@ -464,7 +463,7 @@ export default function App() {
   const [report, setReport] = useState<any>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [aiConfig, setAIConfig] = useState<any>({ 
-    provider: 'gemini',
+    provider: 'local',
     localUrl: '',
     localModel: '',
     localApiKey: ''
@@ -827,53 +826,113 @@ export default function App() {
           continue;
         }
 
-        const combinedContext = optimizedFiles.map(f => `[文件: ${f.name}]\n${f.text || ""}`).join("\n\n").substring(0, aiConfig.provider === 'local' ? 12000 : 50000);
+        const perFileAudits: any[] = [];
+        for (let fi = 0; fi < optimizedFiles.length; fi++) {
+          const file = optimizedFiles[fi];
+          const fileContext = String(file.text || "").substring(0, aiConfig.provider === 'local' ? 30000 : 40000);
+          const fileAuditPrompt = `你是一个资深人才评估审计专家。
+待审计指标：【${clause.title}】
+考核基准：${clause.target_description}
+当前交付物文件：${file.name}
+文件文本：
+${fileContext}
 
-        const auditPrompt = `你是一个资深人才评估审计专家。
-        待审计指标：【${clause.title}】
-        考核基准：${clause.target_description}
-        关联证明材料：
-        ${combinedContext}
-        
-        【审计规则】：
-        1. 证据核实：根据材料判断指标是否由于交付物证明已完成。仅限使用提供的材料。
-        2. 会议纪要特殊逻辑：如果是会议纪要/评审纪要，且提到了该指标内容，只要没有明确的“不通过”、“拒绝”、“被驳回”等负面结论，一律默认视为“指标已达成/评审已通过”。
-        
-        JSON 输出:
-        {
-          "summary": "针对该指标的综合审计判断（30-40字，需引用材料事实）",
-          "completion_status": "完成/未完成/部分完成",
-          "score": 0-100,
-          "extracted_evidences": [
-             { "title": "证据关键点", "raw_excerpt": "原文核心片段摘录", "summary": "此事实如何证明指标达成（30-40字）", "confidence": 0.95 }
-          ]
-        }`;
-
-        if (i > 0) await new Promise(r => setTimeout(r, 1200));
-        
-        console.log(`Auditing clause ${i+1}/${clauses.length}: ${clause.title}`);
-        let resp = "";
-        try {
-          resp = await api.callAI(auditPrompt, aiConfig);
-        } catch (aiErr: any) {
-          console.error(`AI Audit failed for clause ${clause.clause_id}:`, aiErr);
-          // Don't crash the whole process, just mark this clause as failed/unknown
-          resp = JSON.stringify({
-            summary: `审计请求失败: ${aiErr.message}`,
-            completion_status: "未知",
-            score: 0,
-            extracted_evidences: []
+请输出JSON：
+{
+  "file_name":"${file.name}",
+  "is_meeting_minutes": true/false,
+  "has_substantive_evidence": true/false,
+  "completion_status": "完成/未完成/部分完成",
+  "score": 0-120,
+  "summary": "该文件对本指标的判断（30-40字）",
+  "extracted_evidences": [{"title":"证据点","raw_excerpt":"原文","summary":"说明","confidence":0.9}]
+}`;
+          let fileResp = "";
+          try {
+            fileResp = await api.callAI(fileAuditPrompt, aiConfig);
+          } catch (aiErr: any) {
+            fileResp = JSON.stringify({ file_name: file.name, is_meeting_minutes: false, has_substantive_evidence: false, completion_status: "未知", score: 0, summary: `文件审计失败: ${aiErr.message}`, extracted_evidences: [] });
+          }
+          const fileAudit = extractJSON(fileResp) || {};
+          perFileAudits.push({
+            file_name: file.name,
+            is_meeting_minutes: Boolean(fileAudit.is_meeting_minutes),
+            has_substantive_evidence: Boolean(fileAudit.has_substantive_evidence),
+            completion_status: fileAudit.completion_status || "未知",
+            score: Math.max(0, Math.min(120, Number(fileAudit.score) || 0)),
+            summary: fileAudit.summary || "",
+            extracted_evidences: Array.isArray(fileAudit.extracted_evidences) ? fileAudit.extracted_evidences : []
           });
         }
 
-        const parsedAudit = extractJSON(resp);
-        console.log(`Clause ${i+1} audit result:`, parsedAudit.completion_status);
+        const hasSubstantiveNonMinutes = perFileAudits.some((f: any) => !f.is_meeting_minutes && f.has_substantive_evidence);
+        const aggregatePrompt = `你是人才评估终审专家。请根据文件级审计结果做指标汇总。
+待审计指标：【${clause.title}】
+考核基准：${clause.target_description}
+文件级结果：${JSON.stringify(perFileAudits)}
 
-        if (parsedAudit.extracted_evidences && Array.isArray(parsedAudit.extracted_evidences)) {
-          const processed = parsedAudit.extracted_evidences.map((ev: any, evIdx: number) => ({
+规则：
+1) 仅依据给定文件级结果。
+2) 会议纪要“默认通过”仅在 hasSubstantiveNonMinutes=true 时可作为加分/佐证，不可单独决定完成。
+3) 若 hasSubstantiveNonMinutes=false，则最终不允许给出“完成”。
+
+已知 hasSubstantiveNonMinutes=${hasSubstantiveNonMinutes}.
+
+输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"里程碑节点","raw_excerpt":"原文","summary":"该里程碑节点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
+
+        let aggResp = "";
+        try {
+          aggResp = await api.callAI(aggregatePrompt, aiConfig);
+        } catch (aiErr: any) {
+          aggResp = JSON.stringify({ summary: `汇总审计失败: ${aiErr.message}`, completion_status: "未知", score: 0, adopted_files: [], rejected_files: [], extracted_evidences: [] });
+        }
+        const parsedAudit = extractJSON(aggResp) || {};
+        const hasMeetingMinutesSupport = perFileAudits.some((f: any) => {
+          const txt = String(f.summary || "");
+          const appearsApproved = /(通过|评审通过|验收通过|同意推进)/.test(txt);
+          return Boolean(f.is_meeting_minutes) && (Boolean(f.has_substantive_evidence) || Number(f.score) >= 60 || appearsApproved);
+        });
+
+        if (!hasSubstantiveNonMinutes && parsedAudit.completion_status === "完成") {
+          parsedAudit.completion_status = "部分完成";
+          parsedAudit.score = Math.min(Number(parsedAudit.score) || 0, 90);
+        }
+
+        if (!hasSubstantiveNonMinutes) {
+          if (hasMeetingMinutesSupport) {
+            // 仅有会议纪要时，给出“部分完成”而非0分，避免与业务常识冲突。
+            parsedAudit.completion_status = "部分完成";
+            const rawScore = Number(parsedAudit.score) || 0;
+            parsedAudit.score = Math.max(80, Math.min(rawScore, 90));
+            parsedAudit.summary = `已有会议纪要类材料显示“${clause.title}”评审通过，但缺少非纪要细节佐证，当前按“部分完成”计分。已审阅文件数：${perFileAudits.length}。`;
+          } else {
+            const noEvidenceFiles = perFileAudits
+              .filter((f: any) => !f.has_substantive_evidence)
+              .map((f: any) => f.file_name)
+              .slice(0, 3)
+              .join('、');
+            parsedAudit.summary = `未发现可直接证明“${clause.title}”达成的非纪要实质证据；重点核查文件：${noEvidenceFiles || '（未识别到有效文件名）'}。`;
+          }
+        }
+
+        const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];
+        // 如果汇总层只返回了单文件证据，补充文件级审计证据，避免“看起来只分析了一个文件”。
+        const aggregatedSourceNames = new Set(
+          evidenceList.map((ev: any) => String(ev?.source_file_name || "").trim()).filter(Boolean)
+        );
+        const fileLevelEvidenceFallback = perFileAudits.flatMap((fa: any) => {
+          const name = String(fa.file_name || "").trim();
+          const list = Array.isArray(fa.extracted_evidences) ? fa.extracted_evidences : [];
+          // 只补充汇总层未覆盖到的文件证据
+          if (!name || aggregatedSourceNames.has(name)) return [];
+          return list.slice(0, 2).map((ev: any) => ({ ...ev, source_file_name: name }));
+        });
+        const mergedEvidenceList = [...evidenceList, ...fileLevelEvidenceFallback];
+        if (mergedEvidenceList.length > 0) {
+          const processed = mergedEvidenceList.map((ev: any, evIdx: number) => ({
             ...ev,
             evidence_id: `EV_C${i}_${evIdx}_${uuidv4().substring(0,4)}`,
-            source_file_name: files.map(f => f.name).join(", "),
+            source_file_name: ev.source_file_name || files.map(f => f.name).join(", "),
             matched_clause_id: clause.clause_id,
             adopted_flag: true
           }));
@@ -884,7 +943,7 @@ export default function App() {
 
         intermediateResults[clause.clause_id] = [{
           conclusion: parsedAudit.summary,
-          score: parsedAudit.score,
+          score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
           completion_status: parsedAudit.completion_status
         }];
       }
@@ -899,7 +958,7 @@ export default function App() {
           title: c.title,
           category: c.category,
           weight: c.weight,
-          score: audit.score || 0,
+          score: Math.max(0, Math.min(120, Number(audit.score) || 0)),
           target_benchmark: c.target_description || "-",
           completion_status: audit.completion_status || "未完成",
           actual_value: audit.conclusion || "无数据",
@@ -970,10 +1029,10 @@ export default function App() {
         "fit_score": 0-100,
         "fit_eval": "对该员工岗位适配度的定性评价",
         "radar_data": [
-          { "subject": "培育与协同力", "score": 0-100, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "创新与战略落地力", "score": 0-100, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "产品履约交付力", "score": 0-100, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "技术突破攻坚力", "score": 0-100, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
+          { "subject": "培育与协同力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "创新与战略落地力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "产品履约交付力", "score": 0-120, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
+          { "subject": "技术突破攻坚力", "score": 0-120, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
         ],
         "strengths": ["优势1", "优势2"],
         "weaknesses": ["改进1", "改进2"],
@@ -1326,6 +1385,7 @@ export default function App() {
                     competencyAnalysis={competencyAnalysis}
                     valueCreation={valueCreation}
                     onReset={handleReset} 
+                    taskId={currentTaskId} 
                   />
                 </motion.div>
               )}
@@ -1357,15 +1417,6 @@ export default function App() {
 
               <div className="space-y-6">
                 <div className="flex gap-2 p-1 bg-slate-50 rounded-2xl border border-slate-100">
-                  <button 
-                    onClick={() => setAIConfig({ ...aiConfig, provider: 'gemini' })}
-                    className={cn(
-                      "flex-1 py-3 rounded-xl font-bold transition-all text-xs lg:text-sm",
-                      aiConfig.provider === 'gemini' ? "bg-white text-indigo-600 shadow-sm border border-slate-100" : "text-slate-400"
-                    )}
-                  >
-                    Google Gemini
-                  </button>
                   <button 
                     onClick={() => setAIConfig({ ...aiConfig, provider: 'local' })}
                     className={cn(
@@ -1421,18 +1472,6 @@ export default function App() {
                       value={aiConfig.localApiKey}
                       onChange={(e: any) => setAIConfig({ ...aiConfig, localApiKey: e.target.value })}
                     />
-                  </div>
-                )}
-
-                {aiConfig.provider === 'gemini' && (
-                  <div className="p-6 bg-indigo-50/50 rounded-3xl border border-indigo-100 flex items-start gap-4">
-                    <div className="bg-indigo-600 p-2 rounded-xl text-white">
-                      <Sparkles className="size-5" />
-                    </div>
-                    <div>
-                      <h4 className="font-bold text-indigo-900 text-sm">AI Studio 原生引擎 (Gemini 3 Pro/Flash)</h4>
-                      <p className="text-indigo-600/70 text-[10px] uppercase font-bold tracking-widest mt-1">无需额外配置，自动通过 AI Studio 平台调用最先进的多模态分析能力。</p>
-                    </div>
                   </div>
                 )}
               </div>
@@ -1851,7 +1890,7 @@ function TaskStatusView({ status, onReset }: { status: any, onReset?: () => void
           <p className="text-slate-500 mt-2 font-mono uppercase tracking-widest text-xs">
             {isFailed 
               ? "错误：AI 分析被中断" 
-              : `引擎: ${status?.ai_provider === 'local' ? '本地大模型' : status?.ai_provider === 'mock' ? '系统演示' : 'Gemini 3'}`
+              : `引擎: ${status?.ai_provider === 'local' ? '本地大模型' : status?.ai_provider === 'mock' ? '系统演示' : '本地大模型'}`
             }
             {!isFailed && <span className="bg-indigo-100 text-indigo-600 px-1 py-0.5 rounded ml-1">
               {status?.ai_provider === 'local' ? '私有化部署' : status?.ai_provider === 'mock' ? '离线逻辑' : 'AI Studio 原生'}
@@ -2088,7 +2127,8 @@ function ReportView({
   setActiveTab,
   competencyAnalysis,
   valueCreation,
-  onReset 
+  onReset,
+  taskId
 }: { 
   overallSummary: any, 
   categoryStats: any[], 
@@ -2099,7 +2139,8 @@ function ReportView({
   setActiveTab: (t: 'overview' | 'details' | 'competency') => void,
   competencyAnalysis: any,
   valueCreation: any,
-  onReset: () => void 
+  onReset: () => void,
+  taskId: string | null
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
@@ -2242,6 +2283,45 @@ function ReportView({
   };
 
   const knowledge = getKnowledgeAccumulation();
+
+  const sourceNameToAlias = (() => {
+    const names = Array.from(new Set((evidences || []).map((e: any) => String(e?.source_file_name || "").trim()).filter(Boolean)));
+    const m = new Map<string, string>();
+    names.forEach((n, i) => m.set(n, `交付物${i + 1}`));
+    return m;
+  })();
+
+  const buildDownloadUrl = (sourceName: string) => {
+    if (!taskId || !sourceName) return "#";
+    const primaryName = String(sourceName || "").split(",")[0]?.trim() || "";
+    return `/api/v1/evaluation/tasks/${encodeURIComponent(taskId)}/files/download?name=${encodeURIComponent(primaryName)}`;
+  };
+
+  const triggerAnonymousDownload = async (sourceName: string) => {
+    try {
+      const url = buildDownloadUrl(sourceName);
+      if (url === "#") return;
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        const txt = await resp.text();
+        throw new Error(txt || `HTTP ${resp.status}`);
+      }
+      const blob = await resp.blob();
+      const alias = sourceNameToAlias.get(sourceName) || "交付物";
+      const ext = (String(sourceName).match(/\.[a-zA-Z0-9]+$/)?.[0] || ".bin");
+      const filename = `${alias}${ext}`;
+      const a = document.createElement('a');
+      const obj = URL.createObjectURL(blob);
+      a.href = obj;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(obj);
+    } catch (e: any) {
+      alert(`下载失败: ${e?.message || e}`);
+    }
+  };
 
   return (
     <div className="space-y-8 pb-32">
@@ -2439,7 +2519,7 @@ function ReportView({
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <div className="bg-slate-50 p-6 rounded-3xl border border-slate-100">
                           <h4 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3 flex items-center gap-1.5">
-                            <Sparkles className="size-3 text-indigo-600" /> 核心优势
+                            <Lightbulb className="size-3 text-indigo-600" /> 核心优势
                           </h4>
                           <div className="text-xs text-slate-700 font-semibold space-y-2 whitespace-pre-wrap leading-relaxed">
                             {overallSummary?.core_strengths}
@@ -2611,12 +2691,7 @@ function ReportView({
             </div>
 
             {/* Value Creation Section */}
-            {(overallSummary?.value_creation_details?.main_desc || 
-              overallSummary?.value_creation_details?.product_projects || 
-              overallSummary?.value_creation_details?.business_revenue || 
-              overallSummary?.value_creation_details?.tech_innovation || 
-              overallSummary?.value_creation_details?.industry_influence) && (
-              <div className="grid grid-cols-12 gap-8">
+            <div className="grid grid-cols-12 gap-8">
                 <div className="col-span-12 lg:col-span-2 bg-indigo-600/90 rounded-[2.5rem] flex flex-col items-center justify-center p-6 shadow-xl border border-indigo-500/20 gap-4">
                   <span className="text-white font-black text-xl lg:[writing-mode:vertical-rl] uppercase tracking-[0.3em] order-2 lg:order-1">价值创造</span>
                   <div className="bg-white/20 backdrop-blur-md rounded-2xl p-2 flex flex-col items-center order-1 lg:order-2">
@@ -2628,40 +2703,38 @@ function ReportView({
                   {overallSummary?.value_creation_details?.main_desc && (
                     <div className="space-y-2">
                       <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                        <Sparkles className="size-4 text-indigo-600" />
+                        <Lightbulb className="size-4 text-indigo-600" />
                         价值创造总结: <span className="font-medium text-slate-600">{overallSummary.value_creation_details.main_desc}</span>
                       </h4>
                     </div>
                   )}
                   <div className="grid grid-cols-1 md:grid-cols-1 gap-y-3 text-sm text-slate-700 font-bold">
-                    {overallSummary?.value_creation_details?.product_projects && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">①产品项目:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.product_projects.replace(/^①产品项目:\s*/, '')}</p>
-                      </div>
+                    {!(overallSummary?.value_creation_details?.main_desc || 
+                      overallSummary?.value_creation_details?.product_projects || 
+                      overallSummary?.value_creation_details?.business_revenue || 
+                      overallSummary?.value_creation_details?.tech_innovation || 
+                      overallSummary?.value_creation_details?.industry_influence) && (
+                      <div className="text-slate-500 font-medium">不涉及</div>
                     )}
-                    {overallSummary?.value_creation_details?.business_revenue && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">②经营收益:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.business_revenue.replace(/^②经营收益:\s*/, '')}</p>
-                      </div>
-                    )}
-                    {overallSummary?.value_creation_details?.tech_innovation && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">③技术创新:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.tech_innovation.replace(/^③技术创新:\s*/, '')}</p>
-                      </div>
-                    )}
-                    {overallSummary?.value_creation_details?.industry_influence && (
-                      <div className="flex items-start gap-2">
-                        <span className="text-indigo-600 shrink-0">④行业影响:</span>
-                        <p className="font-medium pr-4">{overallSummary?.value_creation_details?.industry_influence.replace(/^④行业影响:\s*/, '')}</p>
-                      </div>
-                    )}
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">①产品项目:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.product_projects ? overallSummary?.value_creation_details?.product_projects.replace(/^①产品项目:\s*/, '') : "不涉及"}</p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">②经营收益:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.business_revenue ? overallSummary?.value_creation_details?.business_revenue.replace(/^②经营收益:\s*/, '') : "不涉及"}</p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">③技术创新:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.tech_innovation ? overallSummary?.value_creation_details?.tech_innovation.replace(/^③技术创新:\s*/, '') : "不涉及"}</p>
+                    </div>
+                    <div className="flex items-start gap-2">
+                      <span className="text-indigo-600 shrink-0">④行业影响:</span>
+                      <p className="font-medium pr-4">{overallSummary?.value_creation_details?.industry_influence ? overallSummary?.value_creation_details?.industry_influence.replace(/^④行业影响:\s*/, '') : "不涉及"}</p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+            </div>
 
             {/* Knowledge Accumulation Section */}
             {knowledge.hasData && (
@@ -2850,7 +2923,7 @@ function ReportView({
                                     <div className="space-y-2">
                                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">目标基准 (Expected)</span>
                                       <div className="text-xs text-slate-600 bg-white p-4 rounded-2xl border border-slate-100 font-medium italic leading-relaxed">
-                                        {r.target_value}
+                                        {r.target_benchmark || r.target_value || "-"}
                                       </div>
                                     </div>
                                     <div className="space-y-2">
@@ -2893,24 +2966,37 @@ function ReportView({
                                       </div>
                                       <div className="space-y-4">
                                         <h6 className="text-[10px] font-bold text-slate-400 uppercase flex items-center gap-2">
-                                           <LinkIcon className="size-3" /> 归因证据链 (Evidence Bundle)
+                                           <LinkIcon className="size-3" /> 里程碑佐证链 (Evidence Bundle)
                                         </h6>
                                         <div className="grid grid-cols-1 gap-3">
-                                          {r.matched_evidence_ids?.map((eid: string) => {
-                                            const ev = evidences.find(e => e.evidence_id === eid);
-                                            return (
-                                              <div key={eid} className="bg-white p-4 rounded-2xl border border-indigo-50 flex items-start gap-4">
-                                                <div className="bg-indigo-600 text-white p-2 rounded-xl shrink-0">
-                                                  <FileCheck className="size-4" />
+                                          {(() => {
+                                            const milestoneList = (r?.metadata?.milestones || [])
+                                              .map((m: any) => m?.content)
+                                              .filter(Boolean);
+                                            const milestoneText = milestoneList.length > 0
+                                              ? milestoneList.slice(0, 2).join('；')
+                                              : "该指标里程碑节点";
+                                            const supportAliases = Array.from(new Set((r.matched_evidence_ids || []).map((mid: string) => {
+                                              const mev = evidences.find((e: any) => e.evidence_id === mid);
+                                              return sourceNameToAlias.get(mev?.source_file_name || "") || "交付物";
+                                            })));
+                                            const supportText = supportAliases.join('、') || '交付物';
+                                            return r.matched_evidence_ids?.map((eid: string) => {
+                                              const ev = evidences.find(e => e.evidence_id === eid);
+                                              return (
+                                                <div key={eid} className="bg-white p-4 rounded-2xl border border-indigo-50 flex items-start gap-4">
+                                                  <div className="bg-indigo-600 text-white p-2 rounded-xl shrink-0">
+                                                    <FileCheck className="size-4" />
+                                                  </div>
+                                                  <div className="space-y-1">
+                                                    <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{sourceNameToAlias.get(ev?.source_file_name || "") || "交付物"}</div>
+                                                    <button onClick={() => triggerAnonymousDownload(ev?.source_file_name || "")} className="text-[11px] font-bold text-slate-900 underline decoration-dotted text-left">{ev?.title || eid}</button>
+                                                    <p className="text-[10px] text-slate-500 leading-tight italic">可佐证里程碑节点：{milestoneText}；佐证交付物：{supportText}。</p>
+                                                  </div>
                                                 </div>
-                                                <div className="space-y-1">
-                                                  <div className="text-[9px] font-black text-indigo-600 uppercase tracking-widest">{ev?.source_file_name || "文件溯源"}</div>
-                                                  <div className="text-[11px] font-bold text-slate-900">{ev?.title || eid}</div>
-                                                  <p className="text-[10px] text-slate-400 leading-tight italic">"{ev?.summary}"</p>
-                                                </div>
-                                              </div>
-                                            );
-                                          })}
+                                              );
+                                            });
+                                          })()}
                                         </div>
                                       </div>
                                     </div>

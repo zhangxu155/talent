@@ -10,8 +10,10 @@ const pdf = require("pdf-parse");
 const officeParser = require("officeparser");
 import mammoth from "mammoth";
 import cors from "cors";
+import { pathToFileURL } from "url";
 import { Decimal } from "decimal.js";
-import { GoogleGenAI } from "@google/genai";
+import { execFile } from "child_process";
+import os from "os";
 const XLSX = require("xlsx");
 
 // --- Types ---
@@ -74,21 +76,246 @@ interface EvaluationTask {
 const tasks: Record<string, EvaluationTask> = {};
 
 // --- AI Service ---
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-if (!GEMINI_API_KEY) {
-  console.warn("WARNING: GEMINI_API_KEY is not set in environment variables. Please check Settings > Secrets.");
+// --- Helpers ---
+
+function normalizeUploadFileName(name: string): string {
+  const raw = String(name || "");
+  // only try latin1->utf8 fix when typical mojibake patterns exist
+  const looksMojibake = /[ÃÂâæåçéèêëîïôöûüÿ]|å|æ|ç|é|ä|ö|ü/.test(raw);
+  if (!looksMojibake) return raw;
+  try {
+    const decoded = Buffer.from(raw, 'latin1').toString('utf8');
+    // accept decoded only if it contains readable CJK or common filename chars
+    if (/[一-龥A-Za-z0-9_.\-()（）\s]/.test(decoded)) return decoded;
+    return raw;
+  } catch {
+    return raw;
+  }
 }
 
-const ai = new GoogleGenAI({ 
-  apiKey: GEMINI_API_KEY || "missing-key",
-  httpOptions: {
-    headers: {
-      'User-Agent': 'aistudio-build',
-    }
-  }
-});
 
-// --- Helpers ---
+
+function execFileAsync(command: string, args: string[], options: any = {}): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, options, (error: any, stdout: string, stderr: string) => {
+      if (error) {
+        (error as any).stderr = stderr;
+        reject(error);
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+  });
+}
+
+function getLocalVlmConfig(runtimeConfig?: { localUrl?: string; localModel?: string; localApiKey?: string }) {
+  const rawUrl = process.env.LOCAL_VLM_URL || process.env.VLM_URL || process.env.QWEN_API_URL || runtimeConfig?.localUrl || "";
+  const model = process.env.LOCAL_VLM_MODEL || process.env.VLM_MODEL || process.env.QWEN_MODEL || runtimeConfig?.localModel || "faw-vlm";
+  const apiKey = process.env.LOCAL_VLM_API_KEY || process.env.VLM_API_KEY || process.env.QWEN_API_KEY || runtimeConfig?.localApiKey || "";
+  return { rawUrl, model, apiKey };
+}
+
+function resolveChatCompletionsUrl(rawUrl: string): string {
+  if (!rawUrl) return "";
+  if (rawUrl.endsWith('/chat/completions') || rawUrl.endsWith('/completions')) return rawUrl;
+  return rawUrl.endsWith('/') ? rawUrl + 'chat/completions' : rawUrl + '/chat/completions';
+}
+
+async function pdfToImagesWithPdftoppm(pdfPath: string, dpi = 180): Promise<string[]> {
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-vlm-"));
+  const outputPrefix = path.join(outDir, "page");
+  try {
+    await execFileAsync("pdftoppm", ["-png", "-r", String(dpi), pdfPath, outputPrefix]);
+  } catch (err: any) {
+    console.warn(`[OCR][PDF] pdftoppm failed: ${String(err?.message || err)} stderr=${String(err?.stderr || "").slice(0, 240)}`);
+    throw err;
+  }
+  const files = fs.readdirSync(outDir)
+    .filter((f: string) => f.endsWith('.png'))
+    .sort()
+    .map((f: string) => path.join(outDir, f));
+  return files;
+}
+
+async function runTesseractOCR(imagePath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync("tesseract", [imagePath, "stdout", "-l", "chi_sim+eng", "--psm", "6"]);
+    return String(stdout || "").trim();
+  } catch (err: any) {
+    console.warn(`[OCR][IMG] tesseract failed on ${path.basename(imagePath)}: ${String(err?.message || err)} stderr=${String(err?.stderr || "").slice(0, 240)}`);
+    return "";
+  }
+}
+
+async function extractPdfTextWithVLMByPages(filePath: string, fileName: string, runtimeConfig?: { localUrl?: string; localModel?: string; localApiKey?: string }): Promise<string> {
+  const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig(runtimeConfig);
+  const targetUrl = resolveChatCompletionsUrl(rawUrl);
+  if (!targetUrl) {
+    console.warn(`[VLM][PDF] skipped for ${fileName}: missing VLM URL env (LOCAL_VLM_URL / VLM_URL / QWEN_API_URL)`);
+    return "";
+  }
+
+  let pageImages: string[] = [];
+  try {
+    pageImages = await pdfToImagesWithPdftoppm(filePath, 180);
+    if (pageImages.length === 0) return "";
+    let merged = "";
+    const maxPages = Math.min(pageImages.length, 8);
+
+    for (let i = 0; i < maxPages; i++) {
+      const pageNo = i + 1;
+      const imagePath = pageImages[i];
+      const imageDataUrl = toDataUrl(fs.readFileSync(imagePath), "image/png");
+      const ocrText = await runTesseractOCR(imagePath).catch(() => "");
+      const finalPrompt = `这是扫描件PDF的第 ${pageNo} 页。
+OCR识别结果（可能有误）：
+<ocr_text>
+${ocrText}
+</ocr_text>
+请结合图片与OCR，提取该页完整可读文本与结构（标题/段落/列表/表格要点），输出Markdown，不要编造。文件名：${fileName}`;
+      const payload = {
+        model: vlmModel,
+        messages: [{ role: "user", content: [
+          { type: "image_url", image_url: { url: imageDataUrl } },
+          { type: "text", text: finalPrompt }
+        ] }],
+        temperature: 0.1,
+        max_tokens: 4096
+      } as any;
+
+      const resp = await fetch(targetUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...(vlmKey ? { "Authorization": `Bearer ${vlmKey}` } : {}) },
+        body: JSON.stringify(payload)
+      });
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        console.warn(`[VLM][PDF][page ${pageNo}] request failed: ${resp.status} ${errText.slice(0, 240)}`);
+        continue;
+      }
+      const json = await resp.json() as any;
+      const pageText = String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
+      if (!pageText) {
+        console.warn(`[VLM][PDF][page ${pageNo}] empty response content`);
+      }
+      if (pageText) merged += `
+
+# 第 ${pageNo} 页
+
+${pageText}`;
+    }
+    return merged.trim();
+  } catch (err: any) {
+    console.warn(`[VLM][PDF] page mode failed: ${String(err?.message || err)}`);
+    return "";
+  } finally {
+    const dirs = new Set(pageImages.map(p => path.dirname(p)));
+    dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true }));
+  }
+}
+
+function toDataUrl(buffer: Buffer, mimeType: string): string {
+  return `data:${mimeType};base64,${buffer.toString("base64")}`;
+}
+
+async function extractImageTextWithVLM(filePath: string, fileName: string, runtimeConfig?: { localUrl?: string; localModel?: string; localApiKey?: string }): Promise<string> {
+  const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig(runtimeConfig);
+  const targetUrl = resolveChatCompletionsUrl(rawUrl);
+  if (!targetUrl) {
+    console.warn(`[VLM][IMAGE] skipped for ${fileName}: missing VLM URL env (LOCAL_VLM_URL / VLM_URL / QWEN_API_URL)`);
+    return "";
+  }
+
+  const ext = path.extname(fileName).toLowerCase();
+  const mimeMap: Record<string, string> = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".bmp": "image/bmp", ".tif": "image/tiff", ".tiff": "image/tiff"
+  };
+  const mime = mimeMap[ext] || "image/png";
+  const imageBuf = fs.readFileSync(filePath);
+  const imageDataUrl = toDataUrl(imageBuf, mime);
+
+  const payload = {
+    model: vlmModel,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: imageDataUrl } },
+        { type: "text", text: "请识别这张图片中的内容，提取文字、结构和关键信息。不要编造。" }
+      ]
+    }],
+    temperature: 0.1,
+    max_tokens: 2048
+  } as any;
+
+  try {
+    const resp = await fetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(vlmKey ? { "Authorization": `Bearer ${vlmKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      console.warn(`[VLM][IMAGE] request failed for ${fileName}: ${resp.status} ${errText.slice(0, 240)}`);
+      return "";
+    }
+    const json = await resp.json() as any;
+    return String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
+  } catch (err: any) {
+    console.warn(`[VLM][IMAGE] exception for ${fileName}: ${String(err?.message || err)}`);
+    return "";
+  }
+}
+
+
+
+async function extractPdfTextWithVLM(filePath: string, fileName: string, runtimeConfig?: { localUrl?: string; localModel?: string; localApiKey?: string }): Promise<string> {
+  const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig(runtimeConfig);
+  const targetUrl = resolveChatCompletionsUrl(rawUrl);
+  if (!targetUrl) {
+    console.warn(`[VLM][PDF][full] skipped for ${fileName}: missing VLM URL env (LOCAL_VLM_URL / VLM_URL / QWEN_API_URL)`);
+    return "";
+  }
+
+  const fileBuf = fs.readFileSync(filePath);
+  const pdfDataUrl = toDataUrl(fileBuf, "application/pdf");
+
+  const payload = {
+    model: vlmModel,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: pdfDataUrl } },
+        { type: "text", text: `请解析该PDF文档并提取完整可读文本与关键结构信息（标题、小节、表格要点）。不要编造。文件名：${fileName}` }
+      ]
+    }],
+    temperature: 0.1,
+    max_tokens: 4096
+  } as any;
+
+  try {
+    const resp = await fetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(vlmKey ? { "Authorization": `Bearer ${vlmKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      console.warn(`[VLM][PDF][full] request failed for ${fileName}: ${resp.status} ${errText.slice(0, 240)}`);
+      return "";
+    }
+    const json = await resp.json() as any;
+    return String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
+  } catch (err: any) {
+    console.warn(`[VLM][PDF][full] exception for ${fileName}: ${String(err?.message || err)}`);
+    return "";
+  }
+}
 
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
   // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
@@ -128,11 +355,17 @@ function looksLikeBinaryOrBase64Blob(text: string): boolean {
   return badChars / Math.max(text.length, 1) > 0.02;
 }
 
-async function extractFileText(filePath: string, fileName: string): Promise<string> {
+export async function extractFileText(
+  filePath: string,
+  fileName: string,
+  runtimeConfig?: { localUrl?: string; localModel?: string; localApiKey?: string }
+): Promise<string> {
   const ext = path.extname(fileName).toLowerCase();
   const buffer = fs.readFileSync(filePath);
+  const traceId = `TRACE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   
   try {
+    console.log(`[PARSE][${traceId}] start file=${fileName} ext=${ext} size=${buffer.length}`);
     let extracted = "";
     if (ext === ".pdf") {
       // Robust PDF parser resolution based on logged keys
@@ -203,6 +436,21 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
       } else {
         extracted = String(data || "");
       }
+
+      // Integration hardening for real business PDFs:
+      // if parser returns empty/garbled text, try OCR fallback so upload flow remains usable.
+      const cleanedPdfText = String(extracted || "").trim();
+      console.log(`[PARSE][${traceId}] pdf parser raw length=${cleanedPdfText.length} binaryLike=${looksLikeBinaryOrBase64Blob(cleanedPdfText)}`);
+      if (!cleanedPdfText || looksLikeBinaryOrBase64Blob(cleanedPdfText)) {
+        console.warn(`[PARSE][${traceId}] PDF text empty/garbled, fallback to OCR pipeline`);
+        const ocrText = await extractImageTextWithOCR(filePath);
+        console.warn(`[PARSE][${traceId}] OCR pipeline length=${(ocrText || "").length} binaryLike=${looksLikeBinaryOrBase64Blob(String(ocrText || ""))}`);
+        if (ocrText && !looksLikeBinaryOrBase64Blob(ocrText)) {
+          extracted = ocrText;
+        } else if (!cleanedPdfText && ocrText) {
+          extracted = ocrText;
+        }
+      }
     } else if (ext === ".xlsx" || ext === ".xls") {
       const workbook = XLSX.read(buffer);
       let fullText = "";
@@ -237,8 +485,10 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
 
     const trimmed = (typeof extracted === 'string' ? extracted : String(extracted || "")).trim();
     const normalized = looksLikeBinaryOrBase64Blob(trimmed) ? "" : trimmed;
+    console.log(`[PARSE][${traceId}] normalized length=${normalized.length} ext=${ext}`);
     if (normalized.length < 10 && buffer.length > 1000) {
       if (ext === ".pdf") {
+        console.warn(`[PARSE][${traceId}] entering deep PDF fallback chain (office OCR -> VLM pages -> VLM full)`);
         // For scanned PDFs, enforce OCR via officeParser's OCR pipeline.
         const ocrText = await parseOfficeToText(filePath, {
           ocr: true,
@@ -247,11 +497,28 @@ async function extractFileText(filePath: string, fileName: string): Promise<stri
             autoTerminateTimeout: 3000
           }
         });
-        if (ocrText && ocrText.length >= 10) return ocrText;
-        return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR回退但仍未获得有效文本，建议先转为PNG后上传或提高扫描质量]`;
+        if (ocrText && ocrText.length >= 10) {
+          console.warn(`[PARSE][${traceId}] deep OCR success len=${ocrText.length}`);
+          return ocrText;
+        }
+        console.warn(`[PARSE][${traceId}] officeParser OCR too short for ${fileName}: len=${(ocrText || "").length}`);
+        let vlmPdfText = await extractPdfTextWithVLMByPages(filePath, fileName, runtimeConfig);
+        console.warn(`[PARSE][${traceId}] VLM page fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
+        if (!vlmPdfText || vlmPdfText.length < 10) {
+          vlmPdfText = await extractPdfTextWithVLM(filePath, fileName, runtimeConfig);
+          console.warn(`[PARSE][${traceId}] VLM full fallback length for ${fileName}: len=${(vlmPdfText || "").length}`);
+        }
+        if (vlmPdfText && vlmPdfText.length >= 10) {
+          console.warn(`[PARSE][${traceId}] deep VLM success len=${vlmPdfText.length}`);
+          return vlmPdfText;
+        }
+        console.warn(`[PARSE][${traceId}] deep fallback failed, returning scanned-pdf hint`);
+        return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR与本地VLM回退但仍未获得有效文本，请提高扫描质量或改传高分辨率图片]`;
       }
       if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
-        return `[图片文件 OCR 结果过少: ${fileName}。请提高分辨率/对比度，或检查 tesseract.js 语言数据加载是否正常]`;
+        const vlmText = await extractImageTextWithVLM(filePath, fileName, runtimeConfig);
+        if (vlmText && vlmText.length >= 10) return vlmText;
+        return `[图片文件 OCR 结果过少: ${fileName}。请提高分辨率/对比度，或检查本地VLM接口/语言数据是否正常]`;
       }
       return `[解析内容过空: ${fileName} - 无法提取有效文本]`;
     }
@@ -437,7 +704,7 @@ ${report.report_json.suggestions.map(s => `- ${s}`).join('\n')}
 
 ---
 *报告生成时间: ${new Date().toLocaleString()}*
-*审计引擎: 人才评估智能系统 (基于 Gemini Pro 1.5)*
+*审计引擎: 人才评估智能系统 (本地模型驱动)*
 `;
 
   task.report = {
@@ -457,7 +724,7 @@ async function startServer() {
 
   // AI Config storage
   let aiConfig = { 
-  provider: 'gemini',
+  provider: 'local',
   localUrl: '',
   localModel: '',
   localApiKey: ''
@@ -512,14 +779,14 @@ async function startServer() {
 
       const newFiles = (req.files || []).map((f: any) => {
         try {
-          f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
+          f.originalname = normalizeUploadFileName(f.originalname);
         } catch(e) {}
         return f;
       });
 
       for (const f of newFiles) {
         console.log(`Extracting text from: ${f.originalname} (${f.size} bytes)`);
-        const text = await extractFileText(f.path, f.originalname);
+        const text = await extractFileText(f.path, f.originalname, aiConfig);
         tasks[id].deliverable_files.push({
           id: uuidv4(),
           name: f.originalname,
@@ -580,8 +847,8 @@ async function startServer() {
       let contractText = contract_text || "";
       if (req.files?.contract?.[0]) {
         const f = req.files.contract[0];
-        f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
-        contractText = await extractFileText(f.path, f.originalname);
+        f.originalname = normalizeUploadFileName(f.originalname);
+        contractText = await extractFileText(f.path, f.originalname, aiConfig);
       }
 
       if (tasks[task_id]) {
@@ -615,8 +882,8 @@ async function startServer() {
         const deliverables: { name: string; text: string }[] = [];
         if (req.files?.deliverables) {
           for (const f of req.files.deliverables) {
-            f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
-            const text = await extractFileText(f.path, f.originalname);
+            f.originalname = normalizeUploadFileName(f.originalname);
+            const text = await extractFileText(f.path, f.originalname, aiConfig);
             deliverables.push({ name: f.originalname, text });
           }
         }
@@ -847,41 +1114,6 @@ async function startServer() {
     const { prompt, config } = req.body;
     
     try {
-      if (config.provider === 'gemini') {
-        if (!GEMINI_API_KEY) {
-          return res.status(401).json({ 
-            code: 401, 
-            message: "Gemini API Key 缺失。请在【Settings > Secrets】中添加并配置 GEMINI_API_KEY。" 
-          });
-        }
-
-        console.log(`AI Proxy [Gemini]: Calling gemini-3-flash-preview...`);
-        try {
-          const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-              temperature: 0.2,
-              topP: 0.1,
-            }
-          });
-          const text = response.text || "";
-          console.log(`AI Proxy [Gemini]: Success. Response length: ${text.length}`);
-          return res.json({ code: 200, data: text });
-        } catch (apiErr: any) {
-          console.error("Gemini API Error:", apiErr);
-          // Check for specifically invalid key errors to guide the user
-          const errString = JSON.stringify(apiErr);
-          if (errString.includes("API_KEY_INVALID") || (apiErr.status === 400 && errString.includes("key"))) {
-            return res.status(400).json({ 
-              code: 400, 
-              message: "Gemini API Key 无效。请在【Settings > Secrets】中检查并更新您的 API Key。" 
-            });
-          }
-          throw apiErr; // Fall through to general error handler
-        }
-      }
-
       if (config.provider !== 'local') {
         return res.status(400).json({ code: 400, message: "Unsupported provider." });
       }
@@ -945,20 +1177,55 @@ async function startServer() {
     res.json({ code: 200 });
   });
 
-  app.post("/api/v1/files/upload", upload.single("file"), async (req: any, res) => {
-    console.log("Quick upload hit:", req.file?.originalname);
+
+  app.get("/api/v1/evaluation/tasks/:task_id/files/download", (req, res) => {
     try {
+      const task = tasks[req.params.task_id];
+      if (!task) return res.status(404).json({ code: 404, message: "Task not found" });
+
+      const rawName = String(req.query.name || "").trim();
+      if (!rawName) return res.status(400).json({ code: 400, message: "Missing file name" });
+
+      const candidates = rawName.split(",").map(s => s.trim()).filter(Boolean);
+      const normalize = (x: string) => x.trim().toLowerCase();
+      const allFiles = [...(task.deliverable_files || []), ...(task.contract_file ? [task.contract_file] : [])];
+
+      let target = null as any;
+      for (const c of candidates) {
+        target = allFiles.find((f: any) => normalize(f.name) === normalize(c));
+        if (target) break;
+      }
+      if (!target) {
+        for (const c of candidates) {
+          target = allFiles.find((f: any) => normalize(f.name).includes(normalize(c)) || normalize(c).includes(normalize(f.name)));
+          if (target) break;
+        }
+      }
+
+      if (!target || !target.path || !fs.existsSync(target.path)) {
+        return res.status(404).json({ code: 404, message: "File not found" });
+      }
+      return res.download(target.path, target.name);
+    } catch (e: any) {
+      return res.status(500).json({ code: 500, message: e.message || "Download failed" });
+    }
+  });
+
+  app.post("/api/v1/files/upload", upload.single("file"), async (req: any, res) => {
+    try {
+      if (req.file?.originalname) req.file.originalname = normalizeUploadFileName(req.file.originalname);
+      console.log("Quick upload hit:", req.file?.originalname);
       if (!req.file) {
         console.error("Quick upload: No file attached");
         return res.status(400).json({ code: 400, message: "No file uploaded" });
       }
       const f = req.file;
       try {
-        f.originalname = Buffer.from(f.originalname, 'latin1').toString('utf8');
+        f.originalname = normalizeUploadFileName(f.originalname);
       } catch (err) {
         console.warn("Filename decoding failed, using raw name", err);
       }
-      const text = await extractFileText(f.path, f.originalname);
+      const text = await extractFileText(f.path, f.originalname, aiConfig);
       res.json({ code: 200, data: { extractedText: text } });
     } catch (e: any) {
       console.error("Quick extraction error:", e);
@@ -989,4 +1256,7 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => console.log(`Server running on http://localhost:${PORT}`));
 }
 
-startServer();
+const isDirectRun = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isDirectRun) {
+  startServer();
+}

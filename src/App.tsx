@@ -358,6 +358,34 @@ function extractCapabilityItemsFromText(text: string): string[] {
   const raw = String(text || "");
   if (!raw.trim()) return [];
 
+  // Priority path: extract only the "能力项" column values when table-like text exists.
+  const tableLines = raw
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .filter(l => l.includes("|") || l.includes("｜"));
+  if (tableLines.length >= 2) {
+    const normalized = tableLines.map(l => l.replace(/｜/g, "|"));
+    const splitRow = (line: string) => line.split("|").map(c => c.trim()).filter(c => c.length > 0);
+    const headerIdx = normalized.findIndex((line) => splitRow(line).some(c => /能力项/.test(c)));
+    if (headerIdx !== -1) {
+      const headerCells = splitRow(normalized[headerIdx]);
+      const abilityColIdx = headerCells.findIndex(c => /能力项/.test(c));
+      if (abilityColIdx !== -1) {
+        const fromTable = normalized
+          .slice(headerIdx + 1)
+          .map(splitRow)
+          .filter(cells => cells.length > abilityColIdx)
+          .map(cells => cells[abilityColIdx])
+          .map(v => v.replace(/^[-:：\s]+|[-:：\s]+$/g, "").trim())
+          .filter(v => v && !/^[-—–]+$/.test(v) && !/(能力项|序号|描述|要求)/.test(v))
+          .filter(v => v.length >= 2 && v.length <= 24);
+        const dedupTable = Array.from(new Set(fromTable));
+        if (dedupTable.length > 0) return dedupTable.slice(0, 20);
+      }
+    }
+  }
+
   const lines = raw
     .split(/\r?\n/)
     .map(l => l.trim())

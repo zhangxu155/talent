@@ -332,6 +332,28 @@ async function quickExtract(file: File): Promise<string> {
   return "";
 }
 
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const safeLimit = Math.max(1, Math.floor(limit || 1));
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+
+  async function runner() {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= items.length) break;
+      results[idx] = await worker(items[idx], idx);
+    }
+  }
+
+  const runners = Array.from({ length: Math.min(safeLimit, items.length) }, () => runner());
+  await Promise.all(runners);
+  return results;
+}
+
 // --- API Client ---
 const api = {
   createTaskUnsafe: async (formData: FormData) => {
@@ -826,10 +848,13 @@ export default function App() {
           continue;
         }
 
-        const perFileAudits: any[] = [];
-        for (let fi = 0; fi < optimizedFiles.length; fi++) {
-          const file = optimizedFiles[fi];
-          const fileContext = String(file.text || "").substring(0, aiConfig.provider === 'local' ? 30000 : 40000);
+        const FILE_AUDIT_CONCURRENCY = 4;
+        const perFileAudits = await runWithConcurrency(optimizedFiles, FILE_AUDIT_CONCURRENCY, async (file: any) => {
+          let liveText = String(file.text || "");
+          if (!liveText && file.rawFile instanceof File) {
+            liveText = await quickExtract(file.rawFile);
+          }
+          const fileContext = liveText.substring(0, aiConfig.provider === 'local' ? 10000 : 12000);
           const fileAuditPrompt = `你是一个资深人才评估审计专家。
 待审计指标：【${clause.title}】
 考核基准：${clause.target_description}
@@ -854,7 +879,7 @@ ${fileContext}
             fileResp = JSON.stringify({ file_name: file.name, is_meeting_minutes: false, has_substantive_evidence: false, completion_status: "未知", score: 0, summary: `文件审计失败: ${aiErr.message}`, extracted_evidences: [] });
           }
           const fileAudit = extractJSON(fileResp) || {};
-          perFileAudits.push({
+          return {
             file_name: file.name,
             is_meeting_minutes: Boolean(fileAudit.is_meeting_minutes),
             has_substantive_evidence: Boolean(fileAudit.has_substantive_evidence),
@@ -862,8 +887,8 @@ ${fileContext}
             score: Math.max(0, Math.min(120, Number(fileAudit.score) || 0)),
             summary: fileAudit.summary || "",
             extracted_evidences: Array.isArray(fileAudit.extracted_evidences) ? fileAudit.extracted_evidences : []
-          });
-        }
+          };
+        });
 
         const hasSubstantiveNonMinutes = perFileAudits.some((f: any) => !f.is_meeting_minutes && f.has_substantive_evidence);
         const aggregatePrompt = `你是人才评估终审专家。请根据文件级审计结果做指标汇总。
@@ -1322,11 +1347,11 @@ ${fileContext}
                      clauses={clauses} 
                      metricFiles={metricFiles}
                      onUpload={async (cid, files) => {
-                      const processedFiles = [];
-                      for (const file of files) {
-                        const text = await quickExtract(file);
-                        processedFiles.push({ name: file.name, text });
-                      }
+                      const processedFiles = files.map((file) => ({
+                        name: file.name,
+                        text: "",
+                        rawFile: file
+                      }));
                       setMetricFiles(prev => ({
                         ...prev,
                         [cid]: [...(prev[cid] || []), ...processedFiles]

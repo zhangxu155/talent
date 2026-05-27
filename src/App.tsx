@@ -1204,6 +1204,11 @@ ${fileContext}
       const modelDims = extractCapabilityItemsFromText(capabilityText)
         .filter((d) => !coreRadarDims.includes(d));
       const dimPool = [...coreRadarDims, ...modelDims];
+      console.log("[CAPABILITY][DIM_EXTRACT]", {
+        capability_text_preview: capabilityText.substring(0, 400),
+        extracted_model_dims: modelDims,
+        final_dim_pool: dimPool
+      });
       const dimRulesText = modelDims.length > 0
         ? `除四个核心维度外，必须额外包含以下能力模型维度（逐项一一输出，不得遗漏、不得改名）：
 ${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
@@ -1360,6 +1365,10 @@ ${dimSchemaText}
         clauses: clauses,
         category_stats: stats,
         competency_analysis: compAnalysis,
+        debug_capability_dims: {
+          extracted_model_dims: modelDims,
+          final_dim_pool: dimPool
+        },
         overall_summary: overallSum,
         value_creation: valueCreationRes,
         status: 'REPORT_READY'

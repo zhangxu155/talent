@@ -967,11 +967,15 @@ async function startServer() {
       overall_summary, 
       category_stats,
       competency_analysis,
+      debug_capability_dims,
       status, 
       is_append = true 
     } = req.body;
 
     console.log(`Syncing Task ${req.params.task_id}: is_append=${is_append}, evidences=${evidences?.length}, results=${results?.length}, status=${status}`);
+    if (debug_capability_dims) {
+      console.log(`[CAPABILITY][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
 
     if (!task.evidences) task.evidences = [];
     if (!task.clause_results) task.clause_results = [];

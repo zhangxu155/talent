@@ -358,6 +358,43 @@ function extractCapabilityItemsFromText(text: string): string[] {
   const raw = String(text || "");
   if (!raw.trim()) return [];
 
+  const parseCsvRow = (line: string): string[] => {
+    const cells = String(line || "")
+      .split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)
+      .map((c) => c.replace(/^"|"$/g, "").trim());
+    return cells;
+  };
+
+  // Priority path 0: parse extracted CSV blocks and only take "能力项" column.
+  // server extracts xlsx/xls as:
+  // --- Sheet: xxx ---
+  // a,b,c
+  // ...
+  const csvLines = raw
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => !/^---\s*Sheet:/i.test(l));
+  if (csvLines.length >= 2) {
+    const headerIdx = csvLines.findIndex((line) => parseCsvRow(line).some((c) => /能力项/.test(c)));
+    if (headerIdx !== -1) {
+      const headerCells = parseCsvRow(csvLines[headerIdx]);
+      const abilityColIdx = headerCells.findIndex((c) => /能力项/.test(c));
+      if (abilityColIdx !== -1) {
+        const fromCsv = csvLines
+          .slice(headerIdx + 1)
+          .map(parseCsvRow)
+          .filter((cells) => cells.length > abilityColIdx)
+          .map((cells) => String(cells[abilityColIdx] || "").trim())
+          .map((v) => v.replace(/^[-:：\s]+|[-:：\s]+$/g, "").trim())
+          .filter((v) => v && !/^[-—–]+$/.test(v) && !/(能力项|序号|描述|要求)/.test(v))
+          .filter((v) => v.length >= 2 && v.length <= 24);
+        const dedupCsv = Array.from(new Set(fromCsv));
+        if (dedupCsv.length > 0) return dedupCsv.slice(0, 30);
+      }
+    }
+  }
+
   // Priority path: extract only the "能力项" column values when table-like text exists.
   const tableLines = raw
     .split(/\r?\n/)

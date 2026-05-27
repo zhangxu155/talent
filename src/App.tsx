@@ -375,6 +375,7 @@ function extractCapabilityItemsFromText(text: string): string[] {
     if (v.length < 2 || v.length > 18) return false;
     if (/[：:，,。；;]/.test(v)) return false;
     if (/(定性|定量|描述|要求|方法|工具|知识|完成|至少|负责|能力项)/.test(v)) return false;
+    if (/(开发部|事业部|部门|中心|公司|岗位|职级|序列)$/.test(v)) return false;
     return true;
   };
 
@@ -398,7 +399,7 @@ function extractCapabilityItemsFromText(text: string): string[] {
     const headerIdx = csvLines.findIndex((line) => isHeaderLike(parseCsvRow(line)));
     if (headerIdx !== -1) {
       const headerCells = parseCsvRow(csvLines[headerIdx]);
-      const abilityColIdx = headerCells.findIndex((c) => /能力项/.test(c));
+      const abilityColIdx = headerCells.findIndex((c) => /^能力项$/.test(c.replace(/\s+/g, "")));
       const serialColIdx = headerCells.findIndex((c) => /序号/.test(c));
       if (abilityColIdx !== -1) {
         const fromCsv = csvLines
@@ -435,7 +436,7 @@ function extractCapabilityItemsFromText(text: string): string[] {
     const headerIdx = normalized.findIndex((line) => splitRow(line).some(c => /能力项/.test(c)));
     if (headerIdx !== -1) {
       const headerCells = splitRow(normalized[headerIdx]);
-      const abilityColIdx = headerCells.findIndex(c => /能力项/.test(c));
+      const abilityColIdx = headerCells.findIndex(c => /^能力项$/.test(c.replace(/\s+/g, "")));
       if (abilityColIdx !== -1) {
         const fromTable = normalized
           .slice(headerIdx + 1)
@@ -448,27 +449,8 @@ function extractCapabilityItemsFromText(text: string): string[] {
       }
     }
   }
-
-  const lines = raw
-    .split(/\r?\n/)
-    .map(l => l.trim())
-    .filter(Boolean);
-
-  const blacklist = /(岗位职责|任职要求|教育背景|工作经历|简历|公司|部门|姓名|邮箱|电话|项目经验|专业技能|技能栈|证书|语言能力|自我评价)/i;
-  const cleaned = lines
-    .map((line) => line
-      .replace(/^[\-\*•●○▪▫▶►]+/, "")
-      .replace(/^\d+[\.\、\)]\s*/, "")
-      .replace(/^[（(][一二三四五六七八九十\d]+[）)]\s*/, "")
-      .trim()
-    )
-    .filter(line => line.length >= 2 && line.length <= 24)
-    .filter(line => !blacklist.test(line))
-    .filter(line => /[能力力性度思维协同交付创新战略突破攻坚管理沟通规划架构产品技术业务]/.test(line))
-    .map(line => line.replace(/[“”"'`{}[\]<>]/g, "").trim())
-    .filter(Boolean);
-
-  return Array.from(new Set(cleaned)).slice(0, 12);
+  // Strict mode: only extract from "能力项" column content; never fallback to free-text guessing.
+  return [];
 }
 
 function pickCapabilityModelTextOnly(jdCombinedText: string): string {

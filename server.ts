@@ -108,6 +108,19 @@ function execFileAsync(command: string, args: string[], options: any = {}): Prom
   });
 }
 
+function getLocalVlmConfig() {
+  const rawUrl = process.env.LOCAL_VLM_URL || process.env.VLM_URL || process.env.QWEN_API_URL || "";
+  const model = process.env.LOCAL_VLM_MODEL || process.env.VLM_MODEL || process.env.QWEN_MODEL || "faw-vlm";
+  const apiKey = process.env.LOCAL_VLM_API_KEY || process.env.VLM_API_KEY || process.env.QWEN_API_KEY || "";
+  return { rawUrl, model, apiKey };
+}
+
+function resolveChatCompletionsUrl(rawUrl: string): string {
+  if (!rawUrl) return "";
+  if (rawUrl.endsWith('/chat/completions') || rawUrl.endsWith('/completions')) return rawUrl;
+  return rawUrl.endsWith('/') ? rawUrl + 'chat/completions' : rawUrl + '/chat/completions';
+}
+
 async function pdfToImagesWithPdftoppm(pdfPath: string, dpi = 180): Promise<string[]> {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-vlm-"));
   const outputPrefix = path.join(outDir, "page");
@@ -125,15 +138,9 @@ async function runTesseractOCR(imagePath: string): Promise<string> {
 }
 
 async function extractPdfTextWithVLMByPages(filePath: string, fileName: string): Promise<string> {
-  const vlmUrl = process.env.LOCAL_VLM_URL || "";
-  const vlmModel = process.env.LOCAL_VLM_MODEL || "faw-vlm";
-  const vlmKey = process.env.LOCAL_VLM_API_KEY || "";
-  if (!vlmUrl) return "";
-
-  let targetUrl = vlmUrl;
-  if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/completions')) {
-    targetUrl = targetUrl.endsWith('/') ? targetUrl + 'chat/completions' : targetUrl + '/chat/completions';
-  }
+  const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig();
+  const targetUrl = resolveChatCompletionsUrl(rawUrl);
+  if (!targetUrl) return "";
 
   let pageImages: string[] = [];
   try {
@@ -168,9 +175,16 @@ ${ocrText}
         headers: { "Content-Type": "application/json", ...(vlmKey ? { "Authorization": `Bearer ${vlmKey}` } : {}) },
         body: JSON.stringify(payload)
       });
-      if (!resp.ok) continue;
+      if (!resp.ok) {
+        const errText = await resp.text().catch(() => "");
+        console.warn(`[VLM][PDF][page ${pageNo}] request failed: ${resp.status} ${errText.slice(0, 240)}`);
+        continue;
+      }
       const json = await resp.json() as any;
       const pageText = String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
+      if (!pageText) {
+        console.warn(`[VLM][PDF][page ${pageNo}] empty response content`);
+      }
       if (pageText) merged += `
 
 # 第 ${pageNo} 页
@@ -178,7 +192,8 @@ ${ocrText}
 ${pageText}`;
     }
     return merged.trim();
-  } catch {
+  } catch (err: any) {
+    console.warn(`[VLM][PDF] page mode failed: ${String(err?.message || err)}`);
     return "";
   } finally {
     const dirs = new Set(pageImages.map(p => path.dirname(p)));
@@ -191,10 +206,9 @@ function toDataUrl(buffer: Buffer, mimeType: string): string {
 }
 
 async function extractImageTextWithVLM(filePath: string, fileName: string): Promise<string> {
-  const vlmUrl = process.env.LOCAL_VLM_URL || "";
-  const vlmModel = process.env.LOCAL_VLM_MODEL || "faw-vlm";
-  const vlmKey = process.env.LOCAL_VLM_API_KEY || "";
-  if (!vlmUrl) return "";
+  const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig();
+  const targetUrl = resolveChatCompletionsUrl(rawUrl);
+  if (!targetUrl) return "";
 
   const ext = path.extname(fileName).toLowerCase();
   const mimeMap: Record<string, string> = {
@@ -203,11 +217,6 @@ async function extractImageTextWithVLM(filePath: string, fileName: string): Prom
   const mime = mimeMap[ext] || "image/png";
   const imageBuf = fs.readFileSync(filePath);
   const imageDataUrl = toDataUrl(imageBuf, mime);
-
-  let targetUrl = vlmUrl;
-  if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/completions')) {
-    targetUrl = targetUrl.endsWith('/') ? targetUrl + 'chat/completions' : targetUrl + '/chat/completions';
-  }
 
   const payload = {
     model: vlmModel,
@@ -231,10 +240,15 @@ async function extractImageTextWithVLM(filePath: string, fileName: string): Prom
       },
       body: JSON.stringify(payload)
     });
-    if (!resp.ok) return "";
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      console.warn(`[VLM][IMAGE] request failed for ${fileName}: ${resp.status} ${errText.slice(0, 240)}`);
+      return "";
+    }
     const json = await resp.json() as any;
     return String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
-  } catch {
+  } catch (err: any) {
+    console.warn(`[VLM][IMAGE] exception for ${fileName}: ${String(err?.message || err)}`);
     return "";
   }
 }
@@ -242,18 +256,12 @@ async function extractImageTextWithVLM(filePath: string, fileName: string): Prom
 
 
 async function extractPdfTextWithVLM(filePath: string, fileName: string): Promise<string> {
-  const vlmUrl = process.env.LOCAL_VLM_URL || "";
-  const vlmModel = process.env.LOCAL_VLM_MODEL || "faw-vlm";
-  const vlmKey = process.env.LOCAL_VLM_API_KEY || "";
-  if (!vlmUrl) return "";
+  const { rawUrl, model: vlmModel, apiKey: vlmKey } = getLocalVlmConfig();
+  const targetUrl = resolveChatCompletionsUrl(rawUrl);
+  if (!targetUrl) return "";
 
   const fileBuf = fs.readFileSync(filePath);
   const pdfDataUrl = toDataUrl(fileBuf, "application/pdf");
-
-  let targetUrl = vlmUrl;
-  if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/completions')) {
-    targetUrl = targetUrl.endsWith('/') ? targetUrl + 'chat/completions' : targetUrl + '/chat/completions';
-  }
 
   const payload = {
     model: vlmModel,
@@ -277,10 +285,15 @@ async function extractPdfTextWithVLM(filePath: string, fileName: string): Promis
       },
       body: JSON.stringify(payload)
     });
-    if (!resp.ok) return "";
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => "");
+      console.warn(`[VLM][PDF][full] request failed for ${fileName}: ${resp.status} ${errText.slice(0, 240)}`);
+      return "";
+    }
     const json = await resp.json() as any;
     return String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
-  } catch {
+  } catch (err: any) {
+    console.warn(`[VLM][PDF][full] exception for ${fileName}: ${String(err?.message || err)}`);
     return "";
   }
 }

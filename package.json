@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "start": "node server.ts"
+    "start": "node server.ts",
+    "test:pdf": "node --test src/__tests__/pdf-vlm.test.mjs",
+    "pdf:cli": "node scripts/pdf-vlm-cli.mjs"
   },
   "dependencies": {
     "@google/genai": "^1.50.1",

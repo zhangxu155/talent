@@ -124,7 +124,12 @@ function resolveChatCompletionsUrl(rawUrl: string): string {
 async function pdfToImagesWithPdftoppm(pdfPath: string, dpi = 180): Promise<string[]> {
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "pdf-vlm-"));
   const outputPrefix = path.join(outDir, "page");
-  await execFileAsync("pdftoppm", ["-png", "-r", String(dpi), pdfPath, outputPrefix]);
+  try {
+    await execFileAsync("pdftoppm", ["-png", "-r", String(dpi), pdfPath, outputPrefix]);
+  } catch (err: any) {
+    console.warn(`[OCR][PDF] pdftoppm failed: ${String(err?.message || err)} stderr=${String(err?.stderr || "").slice(0, 240)}`);
+    throw err;
+  }
   const files = fs.readdirSync(outDir)
     .filter((f: string) => f.endsWith('.png'))
     .sort()
@@ -133,8 +138,13 @@ async function pdfToImagesWithPdftoppm(pdfPath: string, dpi = 180): Promise<stri
 }
 
 async function runTesseractOCR(imagePath: string): Promise<string> {
-  const { stdout } = await execFileAsync("tesseract", [imagePath, "stdout", "-l", "chi_sim+eng", "--psm", "6"]);
-  return String(stdout || "").trim();
+  try {
+    const { stdout } = await execFileAsync("tesseract", [imagePath, "stdout", "-l", "chi_sim+eng", "--psm", "6"]);
+    return String(stdout || "").trim();
+  } catch (err: any) {
+    console.warn(`[OCR][IMG] tesseract failed on ${path.basename(imagePath)}: ${String(err?.message || err)} stderr=${String(err?.stderr || "").slice(0, 240)}`);
+    return "";
+  }
 }
 
 async function extractPdfTextWithVLMByPages(filePath: string, fileName: string, runtimeConfig?: { localUrl?: string; localModel?: string; localApiKey?: string }): Promise<string> {

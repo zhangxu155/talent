@@ -354,6 +354,30 @@ async function runWithConcurrency<T, R>(
   return results;
 }
 
+function extractCapabilityItemsFromText(text: string): string[] {
+  const raw = String(text || "");
+  if (!raw.trim()) return [];
+
+  const lines = raw
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
+
+  const blacklist = /(岗位职责|任职要求|教育背景|工作经历|简历|公司|部门|姓名|邮箱|电话|项目经验|专业技能|技能栈|证书|语言能力|自我评价)/i;
+  const cleaned = lines
+    .map((line) => line
+      .replace(/^[\-\*•●○▪▫▶►]+/, "")
+      .replace(/^\d+[\.\、\)]\s*/, "")
+      .replace(/^[（(][一二三四五六七八九十\d]+[）)]\s*/, "")
+      .trim()
+    )
+    .filter(line => line.length >= 2 && line.length <= 24)
+    .filter(line => !blacklist.test(line))
+    .filter(line => /[能力力性度思维协同交付创新战略突破攻坚管理沟通规划架构产品技术业务]/.test(line));
+
+  return Array.from(new Set(cleaned)).slice(0, 12);
+}
+
 // --- API Client ---
 const api = {
   createTaskUnsafe: async (formData: FormData) => {
@@ -1035,6 +1059,25 @@ ${fileContext}
       } catch (e) { console.error("Value Creation AI failed:", e); }
       setValueCreation(valueCreationRes);
 
+      const coreRadarDims = [
+        "培育与协同力",
+        "创新与战略落地力",
+        "产品履约交付力",
+        "技术突破攻坚力"
+      ];
+      const modelDims = extractCapabilityItemsFromText(capabilityText)
+        .filter((d) => !coreRadarDims.includes(d));
+      const dimPool = [...coreRadarDims, ...modelDims];
+      const dimRulesText = modelDims.length > 0
+        ? `除四个核心维度外，必须额外包含以下能力模型维度（逐项一一输出，不得遗漏、不得改名）：
+${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
+        : `能力模型中未稳定提取到额外维度，请仅输出四个核心维度。`;
+
+      const dimSchemaText = dimPool.map((d, idx) => {
+        const baseline = idx < 2 ? 80 : idx === 2 ? 85 : idx === 3 ? 90 : 80;
+        return `          { "subject": "${d}", "score": 0-120, "baseline": ${baseline}, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }`;
+      }).join(",\n");
+
       const compPrompt = `你是一个资深组织发展专家。对比该员工的【实际业绩产出】与【岗位要求/胜任力模型】，评估其胜任力匹配度与发展潜力。
       【岗位要求/胜任力模型】: ${capabilityText.substring(0, 3000)}
       【简历信息】: ${resumeText.substring(0, 3000)}
@@ -1046,18 +1089,15 @@ ${fileContext}
       2. 创新与战略落地力
       3. 产品履约交付力
       4. 技术突破攻坚力
-      
-      此外，请基于提供的岗位要求和简历信息，补充提取 1-3 个最能体现该岗位核心特质的评价维度（例如：架构设计能力、行业影响力、数据洞察力等）。
+      ${dimRulesText}
+      最终 radar_data 仅允许包含上述维度集合，不允许新增其它维度名。
       
       请严格按照以下格式输出 JSON:
       {
         "fit_score": 0-100,
         "fit_eval": "对该员工岗位适配度的定性评价",
         "radar_data": [
-          { "subject": "培育与协同力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "创新与战略落地力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "产品履约交付力", "score": 0-120, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "技术突破攻坚力", "score": 0-120, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
+${dimSchemaText}
         ],
         "strengths": ["优势1", "优势2"],
         "weaknesses": ["改进1", "改进2"],

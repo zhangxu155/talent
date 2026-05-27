@@ -76,6 +76,60 @@ const tasks: Record<string, EvaluationTask> = {};
 // --- AI Service ---
 // --- Helpers ---
 
+function toDataUrl(buffer: Buffer, mimeType: string): string {
+  return `data:${mimeType};base64,${buffer.toString("base64")}`;
+}
+
+async function extractImageTextWithVLM(filePath: string, fileName: string): Promise<string> {
+  const vlmUrl = process.env.LOCAL_VLM_URL || "";
+  const vlmModel = process.env.LOCAL_VLM_MODEL || "faw-vlm";
+  const vlmKey = process.env.LOCAL_VLM_API_KEY || "";
+  if (!vlmUrl) return "";
+
+  const ext = path.extname(fileName).toLowerCase();
+  const mimeMap: Record<string, string> = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".bmp": "image/bmp", ".tif": "image/tiff", ".tiff": "image/tiff"
+  };
+  const mime = mimeMap[ext] || "image/png";
+  const imageBuf = fs.readFileSync(filePath);
+  const imageDataUrl = toDataUrl(imageBuf, mime);
+
+  let targetUrl = vlmUrl;
+  if (!targetUrl.endsWith('/chat/completions') && !targetUrl.endsWith('/completions')) {
+    targetUrl = targetUrl.endsWith('/') ? targetUrl + 'chat/completions' : targetUrl + '/chat/completions';
+  }
+
+  const payload = {
+    model: vlmModel,
+    messages: [{
+      role: "user",
+      content: [
+        { type: "image_url", image_url: { url: imageDataUrl } },
+        { type: "text", text: "请识别这张图片中的内容，提取文字、结构和关键信息。不要编造。" }
+      ]
+    }],
+    temperature: 0.1,
+    max_tokens: 2048
+  } as any;
+
+  try {
+    const resp = await fetch(targetUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(vlmKey ? { "Authorization": `Bearer ${vlmKey}` } : {})
+      },
+      body: JSON.stringify(payload)
+    });
+    if (!resp.ok) return "";
+    const json = await resp.json() as any;
+    return String(json?.choices?.[0]?.message?.content || json?.choices?.[0]?.text || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
   // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
   return parseOfficeToText(filePath, {
@@ -250,7 +304,9 @@ export async function extractFileText(filePath: string, fileName: string): Promi
         return `[此 PDF 文件可能是扫描件或图片格式，文本层不可用。系统已尝试 JS 侧解析/OCR回退但仍未获得有效文本，建议先转为PNG后上传或提高扫描质量]`;
       }
       if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
-        return `[图片文件 OCR 结果过少: ${fileName}。请提高分辨率/对比度，或检查 tesseract.js 语言数据加载是否正常]`;
+        const vlmText = await extractImageTextWithVLM(filePath, fileName);
+        if (vlmText && vlmText.length >= 10) return vlmText;
+        return `[图片文件 OCR 结果过少: ${fileName}。请提高分辨率/对比度，或检查本地VLM接口/语言数据是否正常]`;
       }
       return `[解析内容过空: ${fileName} - 无法提取有效文本]`;
     }

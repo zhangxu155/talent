@@ -389,7 +389,13 @@ function extractCapabilityItemsFromText(text: string): string[] {
     .filter(Boolean)
     .filter((l) => !/^---\s*Sheet:/i.test(l));
   if (csvLines.length >= 2) {
-    const headerIdx = csvLines.findIndex((line) => parseCsvRow(line).some((c) => /能力项/.test(c)));
+    const isHeaderLike = (cells: string[]) => {
+      const hasAbility = cells.some((c) => /能力项/.test(c));
+      const hasSerial = cells.some((c) => /序号/.test(c));
+      const hasDesc = cells.some((c) => /描述|定性|定量/.test(c));
+      return hasAbility && (hasSerial || hasDesc);
+    };
+    const headerIdx = csvLines.findIndex((line) => isHeaderLike(parseCsvRow(line)));
     if (headerIdx !== -1) {
       const headerCells = parseCsvRow(csvLines[headerIdx]);
       const abilityColIdx = headerCells.findIndex((c) => /能力项/.test(c));
@@ -399,7 +405,16 @@ function extractCapabilityItemsFromText(text: string): string[] {
           .slice(headerIdx + 1)
           .map(parseCsvRow)
           .filter((cells) => cells.length > abilityColIdx)
-          .filter((cells) => serialColIdx === -1 || /^\d+$/.test(String(cells[serialColIdx] || "").trim()))
+          .filter((cells) => {
+            // Skip decorative/title blocks before actual table body.
+            const rowText = cells.join(" ").trim();
+            if (!rowText) return false;
+            if (/P\d+\s*能力项胜任要求|能力项胜任要求|专业设计师|岗位|模型/.test(rowText) && !/^\d+$/.test(String(cells[serialColIdx] || "").trim())) {
+              return false;
+            }
+            // If serial column exists, only keep pure-number rows.
+            return serialColIdx === -1 || /^\d+$/.test(String(cells[serialColIdx] || "").trim());
+          })
           .map((cells) => normalizeAbilityItem(String(cells[abilityColIdx] || "")))
           .filter((v) => isCleanAbilityItem(v));
         const dedupCsv = Array.from(new Set(fromCsv));

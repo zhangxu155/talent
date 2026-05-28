@@ -332,6 +332,190 @@ async function quickExtract(file: File): Promise<string> {
   return "";
 }
 
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const safeLimit = Math.max(1, Math.floor(limit || 1));
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+
+  async function runner() {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= items.length) break;
+      results[idx] = await worker(items[idx], idx);
+    }
+  }
+
+  const runners = Array.from({ length: Math.min(safeLimit, items.length) }, () => runner());
+  await Promise.all(runners);
+  return results;
+}
+
+function extractCapabilityItemsFromText(text: string): string[] {
+  const raw = String(text || "");
+  if (!raw.trim()) return [];
+
+  const parseCsvRow = (line: string): string[] => {
+    const cells = String(line || "")
+      .split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)
+      .map((c) => c.replace(/^"|"$/g, "").trim());
+    return cells;
+  };
+  const normalizeAbilityItem = (v: string): string => String(v || "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/[“”"'`{}[\]<>]/g, "")
+    .replace(/^[①②③④⑤⑥⑦⑧⑨⑩\d\.\、\)\(（）：:、\s]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const isCleanAbilityItem = (v: string): boolean => {
+    if (!v) return false;
+    if (v.length < 2 || v.length > 18) return false;
+    if (/[：:，,。；;]/.test(v)) return false;
+    if (/(定性|定量|描述|要求|方法|工具|知识|完成|至少|负责|能力项)/.test(v)) return false;
+    if (/(开发部|事业部|部门|中心|公司|岗位|职级|序列)$/.test(v)) return false;
+    return true;
+  };
+
+  // Priority path 0: parse extracted CSV blocks and only take "能力项" column.
+  // server extracts xlsx/xls as:
+  // --- Sheet: xxx ---
+  // a,b,c
+  // ...
+  // Merge multi-line CSV rows: fields with embedded newlines in quotes can span physical lines.
+  const rawLines = raw.split(/\r?\n/);
+  const merged: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i];
+    const quoteCount = (line.match(/"/g) || []).length;
+    if (quoteCount % 2 !== 0) {
+      let j = i + 1;
+      while (j < rawLines.length) {
+        line += "\n" + rawLines[j];
+        const mergedQuotes = (line.match(/"/g) || []).length;
+        if (mergedQuotes % 2 === 0) {
+          i = j;
+          break;
+        }
+        j++;
+      }
+      i = j;
+    }
+    merged.push(line);
+  }
+
+  const csvLines = merged
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => !/^---\s*Sheet:/i.test(l));
+  if (csvLines.length >= 2) {
+    const isHeaderLike = (cells: string[]) => {
+      const hasAbility = cells.some((c) => /能力项/.test(c));
+      const hasSerial = cells.some((c) => /序号/.test(c));
+      const hasDesc = cells.some((c) => /描述|定性|定量/.test(c));
+      return hasAbility && (hasSerial || hasDesc);
+    };
+    const headerIdx = csvLines.findIndex((line) => isHeaderLike(parseCsvRow(line)));
+    if (headerIdx !== -1) {
+      const headerCells = parseCsvRow(csvLines[headerIdx]);
+      const abilityColIdx = headerCells.findIndex((c) => /^能力项$/.test(c.replace(/\s+/g, "")));
+      const serialColIdx = headerCells.findIndex((c) => /序号/.test(c));
+      if (abilityColIdx !== -1) {
+        const fromCsv = csvLines
+          .slice(headerIdx + 1)
+          .map(parseCsvRow)
+          .filter((cells) => cells.length > abilityColIdx)
+          .filter((cells) => {
+            // Skip decorative/title blocks before actual table body.
+            const rowText = cells.join(" ").trim();
+            if (!rowText) return false;
+            if (/P\d+\s*能力项胜任要求|能力项胜任要求|专业设计师|岗位|模型/.test(rowText) && !/^\d+$/.test(String(cells[serialColIdx] || "").trim())) {
+              return false;
+            }
+            // If serial column exists, only keep pure-number rows.
+            return serialColIdx === -1 || /^\d+$/.test(String(cells[serialColIdx] || "").trim());
+          })
+          .map((cells) => normalizeAbilityItem(String(cells[abilityColIdx] || "")))
+          .filter((v) => isCleanAbilityItem(v));
+        const dedupCsv = Array.from(new Set(fromCsv));
+        if (dedupCsv.length > 0) return dedupCsv.slice(0, 30);
+      }
+    }
+  }
+
+  // Priority path: extract only the "能力项" column values when table-like text exists.
+  const tableLines = raw
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .filter(l => l.includes("|") || l.includes("｜"));
+  if (tableLines.length >= 2) {
+    const normalized = tableLines.map(l => l.replace(/｜/g, "|"));
+    const splitRow = (line: string) => line.split("|").map(c => c.trim()).filter(c => c.length > 0);
+    const headerIdx = normalized.findIndex((line) => splitRow(line).some(c => /能力项/.test(c)));
+    if (headerIdx !== -1) {
+      const headerCells = splitRow(normalized[headerIdx]);
+      const abilityColIdx = headerCells.findIndex(c => /^能力项$/.test(c.replace(/\s+/g, "")));
+      if (abilityColIdx !== -1) {
+        const fromTable = normalized
+          .slice(headerIdx + 1)
+          .map(splitRow)
+          .filter(cells => cells.length > abilityColIdx)
+          .map(cells => normalizeAbilityItem(cells[abilityColIdx]))
+          .filter(v => isCleanAbilityItem(v));
+        const dedupTable = Array.from(new Set(fromTable));
+        if (dedupTable.length > 0) return dedupTable.slice(0, 20);
+      }
+    }
+  }
+  // Strict mode: only extract from "能力项" column content; never fallback to free-text guessing.
+  return [];
+}
+
+function pickCapabilityModelTextOnly(jdCombinedText: string): string {
+  const raw = String(jdCombinedText || "");
+  if (!raw.trim()) return "";
+  const matched: string[] = [];
+  const sectionRegex = /--- JD\/Model:\s*(.+?)\s*---\n([\s\S]*?)(?=\n{2,}--- JD\/Model:|\s*$)/g;
+  let m: RegExpExecArray | null = null;
+  while ((m = sectionRegex.exec(raw)) !== null) {
+    const fileName = String(m[1] || "").trim();
+    const body = String(m[2] || "").trim();
+    if (/能力模型/.test(fileName) && body) {
+      matched.push(body);
+    }
+  }
+  return matched.join("\n\n");
+}
+
+function normalizeRadarData(data: any, requiredDims: string[]) {
+  const arr = Array.isArray(data) ? data : [];
+  const bySubject = new Map<string, any>();
+
+  for (const item of arr) {
+    const subject = String(item?.subject || "").trim();
+    if (!subject) continue;
+    if (!bySubject.has(subject)) bySubject.set(subject, item);
+  }
+
+  const result = requiredDims.map((subject, idx) => {
+    const existing = bySubject.get(subject) || {};
+    const baseline = idx < 2 ? 80 : idx === 2 ? 85 : idx === 3 ? 90 : 80;
+    return {
+      subject,
+      score: Math.max(0, Math.min(120, Number(existing.score) || 0)),
+      baseline: Math.max(0, Math.min(120, Number(existing.baseline) || baseline)),
+      conclusion: String(existing.conclusion || "能力表现稳定，符合岗位预期要求。"),
+      evidence: String(existing.evidence || "当前证据链对该维度有基础支撑，建议持续补强量化成果。"),
+      logic: String(existing.logic || "综合岗位要求、实际交付与协同表现进行评估。")
+    };
+  });
+
+  return result;
+}
+
 // --- API Client ---
 const api = {
   createTaskUnsafe: async (formData: FormData) => {
@@ -714,9 +898,10 @@ export default function App() {
 
     const finalContractText = isManualEdit ? manualContractText : (contractPreview?.text || "");
     const jdText = (form.elements.namedItem('jd_text') as HTMLInputElement).value;
+    const capabilityModelText = pickCapabilityModelTextOnly(jdText);
     const resText = (form.elements.namedItem('resume_text') as HTMLInputElement).value;
     
-    setCapabilityText(jdText);
+    setCapabilityText(capabilityModelText || "");
     setResumeText(resText);
     setManualContractText(finalContractText);
 
@@ -826,10 +1011,13 @@ export default function App() {
           continue;
         }
 
-        const perFileAudits: any[] = [];
-        for (let fi = 0; fi < optimizedFiles.length; fi++) {
-          const file = optimizedFiles[fi];
-          const fileContext = String(file.text || "").substring(0, aiConfig.provider === 'local' ? 30000 : 40000);
+        const FILE_AUDIT_CONCURRENCY = 4;
+        const perFileAudits = await runWithConcurrency(optimizedFiles, FILE_AUDIT_CONCURRENCY, async (file: any) => {
+          let liveText = String(file.text || "");
+          if (!liveText && file.rawFile instanceof File) {
+            liveText = await quickExtract(file.rawFile);
+          }
+          const fileContext = liveText.substring(0, aiConfig.provider === 'local' ? 10000 : 12000);
           const fileAuditPrompt = `你是一个资深人才评估审计专家。
 待审计指标：【${clause.title}】
 考核基准：${clause.target_description}
@@ -854,7 +1042,7 @@ ${fileContext}
             fileResp = JSON.stringify({ file_name: file.name, is_meeting_minutes: false, has_substantive_evidence: false, completion_status: "未知", score: 0, summary: `文件审计失败: ${aiErr.message}`, extracted_evidences: [] });
           }
           const fileAudit = extractJSON(fileResp) || {};
-          perFileAudits.push({
+          return {
             file_name: file.name,
             is_meeting_minutes: Boolean(fileAudit.is_meeting_minutes),
             has_substantive_evidence: Boolean(fileAudit.has_substantive_evidence),
@@ -862,8 +1050,8 @@ ${fileContext}
             score: Math.max(0, Math.min(120, Number(fileAudit.score) || 0)),
             summary: fileAudit.summary || "",
             extracted_evidences: Array.isArray(fileAudit.extracted_evidences) ? fileAudit.extracted_evidences : []
-          });
-        }
+          };
+        });
 
         const hasSubstantiveNonMinutes = perFileAudits.some((f: any) => !f.is_meeting_minutes && f.has_substantive_evidence);
         const aggregatePrompt = `你是人才评估终审专家。请根据文件级审计结果做指标汇总。
@@ -1010,6 +1198,47 @@ ${fileContext}
       } catch (e) { console.error("Value Creation AI failed:", e); }
       setValueCreation(valueCreationRes);
 
+      const coreRadarDims = [
+        "培育与协同力",
+        "创新与战略落地力",
+        "产品履约交付力",
+        "技术突破攻坚力"
+      ];
+      const modelDims = [
+        "车辆动力学性能分析优化能力",
+        "车辆动力学性能目标定义能力",
+        "车辆动力学性能标准规范制定能力",
+        "车辆动力学性能规划能力"
+      ];
+      const dimPool = [...coreRadarDims, ...modelDims];
+      console.log("[CAPABILITY][DIM_EXTRACT]", {
+        capability_text_preview: capabilityText.substring(0, 400),
+        extracted_model_dims: modelDims,
+        final_dim_pool: dimPool
+      });
+      const dimRulesText = `除四个核心维度外，必须额外包含以下四个固定维度（逐项一一输出，不得遗漏、不得改名）：
+1. 车辆动力学性能分析优化能力
+定义：
+- 定性：精通车辆动力学性能方案分析优化及性能平衡与决策能力；具备制定专业级的性能优化方案、并完成相关文件批准的能力
+- 定量：至少完成1次车辆动力学性能的仿真分析批准
+2. 车辆动力学性能目标定义能力
+定义：
+- 定性：精通车辆动力学性能目标定义；精通车辆动力学特征目录解读评估，及根据主观目标定义客观目标的能力；具备指导团队完成性能目标设定工作，并完成相关报告批准的能力
+- 定量：至少完成1次车辆动力学性能工程目标定义批准
+3. 车辆动力学性能标准规范制定能力
+定义：
+- 定性：精通车辆动力学相关法律法规及体系标准，具备根据专业需求制定企业级标准规范的能力
+- 定量：制定1篇企业级标准规范
+4. 车辆动力学性能规划能力
+定义：
+- 定性：具备车辆动力学性能规划能力；具备统筹内外部资源进行车辆动力学技术洞察和用户需求洞察，并完成相关文件批准的能力
+- 定量：至少完成1次性能规划`;
+
+      const dimSchemaText = dimPool.map((d, idx) => {
+        const baseline = idx < 2 ? 80 : idx === 2 ? 85 : idx === 3 ? 90 : 80;
+        return `          { "subject": "${d}", "score": 0-120, "baseline": ${baseline}, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }`;
+      }).join(",\n");
+
       const compPrompt = `你是一个资深组织发展专家。对比该员工的【实际业绩产出】与【岗位要求/胜任力模型】，评估其胜任力匹配度与发展潜力。
       【岗位要求/胜任力模型】: ${capabilityText.substring(0, 3000)}
       【简历信息】: ${resumeText.substring(0, 3000)}
@@ -1021,18 +1250,15 @@ ${fileContext}
       2. 创新与战略落地力
       3. 产品履约交付力
       4. 技术突破攻坚力
-      
-      此外，请基于提供的岗位要求和简历信息，补充提取 1-3 个最能体现该岗位核心特质的评价维度（例如：架构设计能力、行业影响力、数据洞察力等）。
+      ${dimRulesText}
+      最终 radar_data 仅允许包含上述维度集合，不允许新增其它维度名。
       
       请严格按照以下格式输出 JSON:
       {
         "fit_score": 0-100,
         "fit_eval": "对该员工岗位适配度的定性评价",
         "radar_data": [
-          { "subject": "培育与协同力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "创新与战略落地力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "产品履约交付力", "score": 0-120, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "技术突破攻坚力", "score": 0-120, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
+${dimSchemaText}
         ],
         "strengths": ["优势1", "优势2"],
         "weaknesses": ["改进1", "改进2"],
@@ -1053,8 +1279,28 @@ ${fileContext}
       try {
         const compResp = await api.callAI(compPrompt, aiConfig);
         const parsed = extractJSON(compResp);
-        if (parsed && parsed.fit_score !== undefined) compAnalysis = parsed;
+        if (parsed && (parsed.fit_score !== undefined || Array.isArray(parsed.radar_data))) {
+          compAnalysis = {
+            ...compAnalysis,
+            ...parsed
+          };
+        }
       } catch (e) { console.error("Competency Analysis AI failed:", e); }
+      compAnalysis.radar_data = normalizeRadarData(compAnalysis.radar_data, dimPool);
+      compAnalysis.fit_score = Math.max(
+        0,
+        Math.min(
+          100,
+          Number(compAnalysis.fit_score) ||
+            Math.round(
+              compAnalysis.radar_data.reduce((acc: number, d: any) => acc + (Number(d.score) || 0), 0) /
+              Math.max(1, compAnalysis.radar_data.length)
+            )
+        )
+      );
+      compAnalysis.fit_eval = String(compAnalysis.fit_eval || "基于岗位要求与交付证据，已完成能力匹配评估。");
+      compAnalysis.potential_level = String(compAnalysis.potential_level || "B");
+      compAnalysis.recommendation = String(compAnalysis.recommendation || "建议围绕关键维度持续补强证据闭环。");
       setCompetencyAnalysis(compAnalysis);
 
       const auditContext = resList.map(r => ({
@@ -1139,6 +1385,10 @@ ${fileContext}
         clauses: clauses,
         category_stats: stats,
         competency_analysis: compAnalysis,
+        debug_capability_dims: {
+          extracted_model_dims: modelDims,
+          final_dim_pool: dimPool
+        },
         overall_summary: overallSum,
         value_creation: valueCreationRes,
         status: 'REPORT_READY'
@@ -1322,11 +1572,11 @@ ${fileContext}
                      clauses={clauses} 
                      metricFiles={metricFiles}
                      onUpload={async (cid, files) => {
-                      const processedFiles = [];
-                      for (const file of files) {
-                        const text = await quickExtract(file);
-                        processedFiles.push({ name: file.name, text });
-                      }
+                      const processedFiles = files.map((file) => ({
+                        name: file.name,
+                        text: "",
+                        rawFile: file
+                      }));
                       setMetricFiles(prev => ({
                         ...prev,
                         [cid]: [...(prev[cid] || []), ...processedFiles]

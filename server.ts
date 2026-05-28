@@ -318,7 +318,34 @@ async function extractPdfTextWithVLM(filePath: string, fileName: string, runtime
 }
 
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
-  // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
+  const ext = path.extname(filePath).toLowerCase();
+
+  // Align runtime OCR behavior with the standalone OCR script:
+  // PDF -> pdftoppm -> tesseract(page by page) -> merged text.
+  if (ext === ".pdf") {
+    let pageImages: string[] = [];
+    try {
+      pageImages = await pdfToImagesWithPdftoppm(filePath, 180);
+      if (pageImages.length === 0) return "";
+
+      const pageTexts: string[] = [];
+      for (let i = 0; i < pageImages.length; i++) {
+        const pageNo = i + 1;
+        const ocr = await runTesseractOCR(pageImages[i]);
+        if (!ocr) continue;
+        pageTexts.push(`# 第 ${pageNo} 页\n\n${ocr}`);
+      }
+      return pageTexts.join("\n\n").trim();
+    } catch (err: any) {
+      console.warn(`[OCR][PDF] pdftoppm+tesseract pipeline failed: ${String(err?.message || err)}`);
+      return "";
+    } finally {
+      const dirs = new Set(pageImages.map(p => path.dirname(p)));
+      dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true }));
+    }
+  }
+
+  // Non-PDF files keep using officeParser OCR fallback.
   return parseOfficeToText(filePath, {
     ocr: true,
     ocrConfig: {
@@ -940,11 +967,15 @@ async function startServer() {
       overall_summary, 
       category_stats,
       competency_analysis,
+      debug_capability_dims,
       status, 
       is_append = true 
     } = req.body;
 
     console.log(`Syncing Task ${req.params.task_id}: is_append=${is_append}, evidences=${evidences?.length}, results=${results?.length}, status=${status}`);
+    if (debug_capability_dims) {
+      console.log(`[CAPABILITY][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
 
     if (!task.evidences) task.evidences = [];
     if (!task.clause_results) task.clause_results = [];
@@ -1024,6 +1055,7 @@ async function startServer() {
       evaluation_period, assessment_period,
       clauses, results, evidences, 
       category_stats, competency_analysis,
+      debug_capability_dims,
       overall_summary, value_creation,
       status 
     } = req.body;
@@ -1050,6 +1082,9 @@ async function startServer() {
     if (overall_summary) task.overall_summary = overall_summary;
     if (value_creation) task.value_creation = value_creation;
     if (status) task.status = status;
+    if (debug_capability_dims) {
+      console.log(`[CAPABILITY][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
 
     console.log(`Upserted Task ${task_id}: status=${task.status}, clauses=${task.clauses?.length}`);
     res.json({ code: 200, message: "Upsert successful", task_id });

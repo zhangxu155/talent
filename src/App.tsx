@@ -384,8 +384,29 @@ function extractCapabilityItemsFromText(text: string): string[] {
   // --- Sheet: xxx ---
   // a,b,c
   // ...
-  const csvLines = raw
-    .split(/\r?\n/)
+  // Merge multi-line CSV rows: fields with embedded newlines in quotes can span physical lines.
+  const rawLines = raw.split(/\r?\n/);
+  const merged: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i];
+    const quoteCount = (line.match(/"/g) || []).length;
+    if (quoteCount % 2 !== 0) {
+      let j = i + 1;
+      while (j < rawLines.length) {
+        line += "\n" + rawLines[j];
+        const mergedQuotes = (line.match(/"/g) || []).length;
+        if (mergedQuotes % 2 === 0) {
+          i = j;
+          break;
+        }
+        j++;
+      }
+      i = j;
+    }
+    merged.push(line);
+  }
+
+  const csvLines = merged
     .map((l) => l.trim())
     .filter(Boolean)
     .filter((l) => !/^---\s*Sheet:/i.test(l));

@@ -356,21 +356,51 @@ async function extractImageTextWithOCR(filePath: string): Promise<string> {
   });
 }
 
-async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
-  try {
-    const ast = await officeParser.parseOffice(filePath, options);
-    if (ast && typeof ast.toText === "function") {
-      return String(ast.toText() || "").trim();
-    }
-    if (typeof ast === "string") return ast.trim();
-    if (ast && typeof ast === "object") {
-      return String((ast as any).text || "").trim();
-    }
-    return "";
-  } catch (err: any) {
-    console.warn("officeParser parse failed:", err.message);
-    return "";
+function normalizeOfficeParserText(data: any): string {
+  if (!data) return "";
+  if (typeof data === "string") return data.trim();
+  if (typeof data.toText === "function") return String(data.toText() || "").trim();
+  if (typeof data === "object") {
+    return String(data.text || data.data || data.content || "").trim();
   }
+  return String(data || "").trim();
+}
+
+async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (text: string) => {
+      if (settled) return;
+      settled = true;
+      resolve(String(text || "").trim());
+    };
+
+    const callback = (data: any, err: any) => {
+      if (err) {
+        console.warn("officeParser parse failed:", err.message || err);
+        finish("");
+        return;
+      }
+      finish(normalizeOfficeParserText(data));
+    };
+
+    try {
+      const maybePromise = Object.keys(options || {}).length > 0
+        ? officeParser.parseOffice(filePath, callback, options)
+        : officeParser.parseOffice(filePath, callback);
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise
+          .then((data: any) => finish(normalizeOfficeParserText(data)))
+          .catch((err: any) => {
+            console.warn("officeParser parse failed:", err.message || err);
+            finish("");
+          });
+      }
+    } catch (err: any) {
+      console.warn("officeParser parse failed:", err.message || err);
+      finish("");
+    }
+  });
 }
 
 function looksLikeBinaryOrBase64Blob(text: string): boolean {
@@ -495,16 +525,8 @@ export async function extractFileText(
       const data = await mammoth.extractRawText({ buffer });
       extracted = data.value || "";
     } else if (ext === ".doc" || ext === ".pptx" || ext === ".ppt") {
-      extracted = await new Promise((resolve) => {
-        officeParser.parseOffice(filePath, (data: any, err: any) => {
-          if (err || !data) {
-            console.warn(`OfficeParser failed for ${fileName}:`, err);
-            resolve("");
-          } else {
-            resolve(data);
-          }
-        });
-      });
+      extracted = await parseOfficeToText(filePath);
+      console.log(`[PARSE][${traceId}] officeParser text length=${String(extracted || "").length} ext=${ext}`);
     } else if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
       extracted = await extractImageTextWithOCR(filePath);
     } else if (ext === ".txt" || ext === ".md" || ext === ".json" || ext === ".csv") {

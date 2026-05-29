@@ -668,11 +668,9 @@ function extractVehicleProjectCodes(items: any[]): string[] {
 }
 
 
-function buildMeetingMinutesCompletionSummary(clause: any): string {
-  const rawTarget = String(clause?.target_description || "").trim();
-  const title = String(clause?.title || "该指标").trim();
-  const source = rawTarget && rawTarget !== "-" ? rawTarget : title;
-  const items = source
+
+function extractTargetTaskItems(text: string): string[] {
+  return String(text || "")
     .split(/[；;。\n]+/)
     .map((part) => part
       .replace(/[（(][^）)]*[）)]/g, "")
@@ -682,7 +680,25 @@ function buildMeetingMinutesCompletionSummary(clause: any): string {
       .trim()
     )
     .filter((part) => part.length > 0)
-    .slice(0, 5);
+    .slice(0, 6);
+}
+
+function buildTargetBasedActualValue(clause: any, fallback: string): string {
+  const statusText = String(fallback || "");
+  if (/未完成|无数据|未发现/.test(statusText)) return fallback || "无数据";
+  const target = String(clause?.target_description || "").trim();
+  if (!target || target === "-") return fallback || "无数据";
+
+  const items = extractTargetTaskItems(target);
+  if (items.length === 0) return fallback || "无数据";
+  return `已按节点完成${items.join("、")}，并通过评审。`;
+}
+
+function buildMeetingMinutesCompletionSummary(clause: any): string {
+  const rawTarget = String(clause?.target_description || "").trim();
+  const title = String(clause?.title || "该指标").trim();
+  const source = rawTarget && rawTarget !== "-" ? rawTarget : title;
+  const items = extractTargetTaskItems(source).slice(0, 5);
 
   if (items.length === 0) {
     const cleanTitle = title.replace(/^完成/, "").replace(/并?通过.*?(评审|验收|批准).*$/g, "").trim();
@@ -1403,6 +1419,8 @@ ${fileContext}
       
       const resList = clauses.map(c => {
         const audit = intermediateResults[c.clause_id]?.[0] || {};
+        const auditConclusion = audit.conclusion || "无数据";
+        const actualValue = buildTargetBasedActualValue(c, auditConclusion);
         return {
           clause_id: c.clause_id,
           title: c.title,
@@ -1411,7 +1429,7 @@ ${fileContext}
           score: Math.max(0, Math.min(120, Number(audit.score) || 0)),
           target_benchmark: c.target_description || "-",
           completion_status: audit.completion_status || "未完成",
-          actual_value: audit.conclusion || "无数据",
+          actual_value: actualValue,
           evidence_summary: audit.conclusion || "未发现支撑材料",
           matched_evidence_ids: allEvidences.filter(e => e.matched_clause_id === c.clause_id).map(e => e.evidence_id),
           scoring_detail: audit.scoring_detail || null

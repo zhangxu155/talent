@@ -113,10 +113,32 @@ function normalizeRuleType(value: any): string {
   return "";
 }
 
+
+function inferScoringFieldsFromTarget(targetText: string) {
+  const raw = String(targetText || "");
+  const targetValue = pickFirstNumber(raw);
+  if (targetValue === null) return { rule_type: "", target_value: null, inferred_from_target: false };
+
+  if (/%|百分比|完成率|达成率|覆盖率|占比|比例|准确率|通过率/.test(raw)) {
+    return { rule_type: "percentage", target_value: targetValue, inferred_from_target: true };
+  }
+
+  if (/\d+(?:\.\d+)?\s*(个|项|次|篇|份|套|场|类|人|件|条|本|份次|车型|项目|报告|标准|专利|论文|培训|课程)/.test(raw)) {
+    return { rule_type: "count", target_value: targetValue, inferred_from_target: true };
+  }
+
+  if (/降低|减少|下降|不高于|低于|小于|以内|控制在|缺陷|投诉|成本|周期|时长|延迟|拖期|风险/.test(raw)) {
+    return { rule_type: "numeric_negative", target_value: targetValue, inferred_from_target: true };
+  }
+
+  return { rule_type: "numeric_positive", target_value: targetValue, inferred_from_target: true };
+}
+
 function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[]) {
   const fields = parsedAudit?.scoring_fields || parsedAudit?.scoring_detail || {};
-  const ruleType = normalizeRuleType(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type);
-  const target = pickFirstNumber(fields.target_value, fields.target, parsedAudit?.target_value);
+  const inferred = inferScoringFieldsFromTarget(clause?.target_description || clause?.title || "");
+  const ruleType = normalizeRuleType(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type || inferred.rule_type);
+  const target = pickFirstNumber(fields.target_value, fields.target, parsedAudit?.target_value, inferred.target_value);
   const actual = pickFirstNumber(fields.actual_value, fields.actual, parsedAudit?.actual_value);
   const baseline = pickFirstNumber(fields.baseline_value, fields.baseline, parsedAudit?.baseline_value);
   const rawEarlyDays = pickFirstNumber(fields.early_days, fields.advance_days, fields.ahead_days, parsedAudit?.early_days);
@@ -143,7 +165,8 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
     on_time: onTimeParsed,
     ai_score: clampScore(Number(parsedAudit?.score) || 0),
     formula: "字段不完整或规则类型不明确，沿用AI赋分",
-    evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean)
+    evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean),
+    inferred_from_target: Boolean(inferred.inferred_from_target && !(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type))
   };
 
   let rawScore: number | null = null;
@@ -1318,8 +1341,10 @@ ${fileContext}
 1) 仅依据给定文件级结果。
 2) 会议纪要“默认通过”仅在 hasSubstantiveNonMinutes=true 时可作为加分/佐证，不可单独决定完成。
 3) 若 hasSubstantiveNonMinutes=false，则最终不允许给出“完成”。
-4) scoring_fields.rule_type 必须按指标真实口径选择：有明确数值目标用 numeric_positive/numeric_negative/count；有百分号目标用 percentage；只有明确计划节点/预期完工标准/阶段交付成果，且证据能抽出计划时间与实际完成时间、提前/拖期/按期事实时，才允许用 milestone。严禁把所有指标默认归为 milestone。
-5) milestone 必须尽量给出 early_days 或 delayed_days；确认为按期但无提前/拖期时，early_days=0、delayed_days=0、on_time=true；无法判断时间差时 rule_type 用 ai_fallback。
+4) scoring_fields.rule_type 必须按指标真实口径选择：绩效指标/子指标中有数字时，优先判断为数字类、个数类或百分比类；有百分号/完成率/达成率用 percentage；有“个/项/次/篇/份/套/场/类/人/件/车型/项目”等数量单位用 count；其他明确数值目标按正向/负向选择 numeric_positive/numeric_negative。
+5) 如果目标基准中有数字，但文件级结果没有抽到该指标实际达成值，actual_value 必须为 null，rule_type 可先按目标类型填写或用 ai_fallback，最终仍按现有证据规则判断，不要编造实际值。
+6) 只有明确计划节点/预期完工标准/阶段交付成果，且证据能抽出计划时间与实际完成时间、提前/拖期/按期事实时，才允许用 milestone。严禁把所有指标默认归为 milestone。
+7) milestone 必须尽量给出 early_days 或 delayed_days；确认为按期但无提前/拖期时，early_days=0、delayed_days=0、on_time=true；无法判断时间差时 rule_type 用 ai_fallback。
 
 已知 hasSubstantiveNonMinutes=${hasSubstantiveNonMinutes}.
 

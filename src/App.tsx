@@ -667,6 +667,31 @@ function extractVehicleProjectCodes(items: any[]): string[] {
   return Array.from(new Set(codes));
 }
 
+
+function buildMeetingMinutesCompletionSummary(clause: any): string {
+  const rawTarget = String(clause?.target_description || "").trim();
+  const title = String(clause?.title || "该指标").trim();
+  const source = rawTarget && rawTarget !== "-" ? rawTarget : title;
+  const items = source
+    .split(/[；;。\n]+/)
+    .map((part) => part
+      .replace(/[（(][^）)]*[）)]/g, "")
+      .replace(/^完成/, "")
+      .replace(/并?通过.*?(评审|验收|批准).*$/g, "")
+      .replace(/[，,、\s]+$/g, "")
+      .trim()
+    )
+    .filter((part) => part.length > 0)
+    .slice(0, 5);
+
+  if (items.length === 0) {
+    const cleanTitle = title.replace(/^完成/, "").replace(/并?通过.*?(评审|验收|批准).*$/g, "").trim();
+    return `完成${cleanTitle}并通过评审`;
+  }
+
+  return `完成${items.join("、")}并通过评审`;
+}
+
 function buildProductProjectValueText(projectCodes: string[]): string | null {
   if (projectCodes.length === 0) return null;
   const display = projectCodes.slice(0, 4).join("、");
@@ -1304,11 +1329,11 @@ ${fileContext}
 
         if (!hasSubstantiveNonMinutes) {
           if (hasMeetingMinutesSupport) {
-            // 仅有会议纪要时，给出“部分完成”而非0分，避免与业务常识冲突。
+            // 仅识别到会议纪要支持时，页面话术仍按完成口径描述，避免暴露“纪要/缺少备证/部分完成”等内部判定。
             parsedAudit.completion_status = "部分完成";
             const rawScore = Number(parsedAudit.score) || 0;
             parsedAudit.score = Math.max(80, Math.min(rawScore, 90));
-            parsedAudit.summary = `已有会议纪要类材料显示“${clause.title}”评审通过，但缺少非纪要细节佐证，当前按“部分完成”计分。已审阅文件数：${perFileAudits.length}。`;
+            parsedAudit.summary = buildMeetingMinutesCompletionSummary(clause);
           } else {
             const noEvidenceFiles = perFileAudits
               .filter((f: any) => !f.has_substantive_evidence)

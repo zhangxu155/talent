@@ -415,7 +415,7 @@ function logPptxModelInput(prompt: string) {
   if (!fileMatch) return;
 
   const fileName = fileMatch[1].trim();
-  const textMatch = rawPrompt.match(/文件文本：\s*\n([\s\S]*?)(?:\n\s*要求：|\n\s*请输出JSON：|$)/);
+  const textMatch = rawPrompt.match(/文件文本：[ \t]*(?:\r?\n)([\s\S]*?)(?:\r?\n[ \t]*要求：|\r?\n[ \t]*请输出JSON：|$)/);
   const modelInputText = textMatch ? textMatch[1].trim() : "";
   console.log(`\n[PPTX_MODEL_INPUT][${fileName}] length=${modelInputText.length}`);
   console.log("========== PPTX 输入给模型的解析文本 BEGIN ==========");

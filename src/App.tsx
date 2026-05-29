@@ -91,6 +91,17 @@ function pickFirstNumber(...values: any[]): number | null {
   return null;
 }
 
+
+function parseOptionalBoolean(value: any): boolean | null {
+  if (value === true || value === false) return value;
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim().toLowerCase();
+  if (!raw || /未知|不确定|无|不适用|n\/?a/.test(raw)) return null;
+  if (/^(true|yes|y|1|是|有|达成|已达成|完成)$/.test(raw)) return true;
+  if (/^(false|no|n|0|否|无|未达成|未完成)$/.test(raw)) return false;
+  return null;
+}
+
 function normalizeRuleType(value: any): string {
   const raw = String(value || "").toLowerCase();
   if (/里程碑|milestone/.test(raw)) return "milestone";
@@ -107,10 +118,17 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
   const target = pickFirstNumber(fields.target_value, fields.target, parsedAudit?.target_value);
   const actual = pickFirstNumber(fields.actual_value, fields.actual, parsedAudit?.actual_value);
   const baseline = pickFirstNumber(fields.baseline_value, fields.baseline, parsedAudit?.baseline_value);
-  const earlyDays = pickFirstNumber(fields.early_days, fields.advance_days, fields.ahead_days, parsedAudit?.early_days) || 0;
-  const delayedDays = pickFirstNumber(fields.delayed_days, fields.delay_days, fields.late_days, parsedAudit?.delayed_days) || 0;
-  const hasChallenge = Boolean(fields.has_challenge ?? parsedAudit?.has_challenge);
-  const challengeMet = Boolean(fields.challenge_met ?? parsedAudit?.challenge_met);
+  const rawEarlyDays = pickFirstNumber(fields.early_days, fields.advance_days, fields.ahead_days, parsedAudit?.early_days);
+  const rawDelayedDays = pickFirstNumber(fields.delayed_days, fields.delay_days, fields.late_days, parsedAudit?.delayed_days);
+  const earlyDays = rawEarlyDays || 0;
+  const delayedDays = rawDelayedDays || 0;
+  const hasChallengeParsed = parseOptionalBoolean(fields.has_challenge ?? parsedAudit?.has_challenge);
+  const challengeMetParsed = parseOptionalBoolean(fields.challenge_met ?? parsedAudit?.challenge_met);
+  const onTimeParsed = parseOptionalBoolean(fields.on_time ?? fields.completed_on_time ?? parsedAudit?.on_time);
+  const useMilestoneRule = parseOptionalBoolean(fields.use_milestone_rule ?? parsedAudit?.use_milestone_rule) === true;
+  const hasChallenge = hasChallengeParsed === true;
+  const challengeMet = challengeMetParsed === true;
+  const hasMilestoneTimingEvidence = rawEarlyDays !== null || rawDelayedDays !== null || onTimeParsed !== null;
   const detailBase = {
     source: "ai_fallback",
     rule_type: ruleType || "ai_fallback",
@@ -119,8 +137,9 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
     baseline_value: baseline,
     early_days: earlyDays,
     delayed_days: delayedDays,
-    has_challenge: hasChallenge,
-    challenge_met: challengeMet,
+    has_challenge: hasChallengeParsed,
+    challenge_met: challengeMetParsed,
+    on_time: onTimeParsed,
     ai_score: clampScore(Number(parsedAudit?.score) || 0),
     formula: "字段不完整或规则类型不明确，沿用AI赋分",
     evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean)
@@ -139,8 +158,8 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
     rawScore = 100 + (actual - target) * 2;
     formula = "个数类：100+(实际值-目标值)*2";
   } else if (ruleType === "percentage" && target !== null && actual !== null && target !== 0) {
-    if (target === 100 && actual === 100 && (earlyDays > 0 || delayedDays > 0 || fields.use_milestone_rule)) {
-      return calculateMilestoneRuleScore({ ...detailBase, rule_type: "milestone" }, earlyDays, delayedDays, hasChallenge, challengeMet);
+    if (target === 100 && actual === 100 && useMilestoneRule && hasMilestoneTimingEvidence) {
+      return calculateMilestoneRuleScore({ ...detailBase, rule_type: "milestone" }, earlyDays, delayedDays, hasChallenge, challengeMet, onTimeParsed);
     }
     if (actual >= target && target < 100) {
       rawScore = 100 + ((actual - target) / Math.max(1, 100 - target)) * 20;
@@ -150,7 +169,14 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
       formula = baseline !== null ? "百分比类未达目标但达到/参考基准：实际值/目标值*100" : "百分比类未达目标：实际值/目标值*100";
     }
   } else if (ruleType === "milestone") {
-    return calculateMilestoneRuleScore(detailBase, earlyDays, delayedDays, hasChallenge, challengeMet);
+    if (!hasMilestoneTimingEvidence) {
+      return {
+        ...detailBase,
+        formula: "里程碑提前/拖期/按期字段不完整，沿用AI赋分",
+        missing_fields: ["early_days/delayed_days/on_time"]
+      };
+    }
+    return calculateMilestoneRuleScore(detailBase, earlyDays, delayedDays, hasChallenge, challengeMet, onTimeParsed);
   }
 
   if (rawScore === null) return detailBase;
@@ -164,7 +190,7 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
   };
 }
 
-function calculateMilestoneRuleScore(detailBase: any, earlyDays: number, delayedDays: number, hasChallenge: boolean, challengeMet: boolean) {
+function calculateMilestoneRuleScore(detailBase: any, earlyDays: number, delayedDays: number, hasChallenge: boolean, challengeMet: boolean, onTime: boolean | null = null) {
   let rawScore = 100;
   let formula = "里程碑类：按期完成必达指标=100";
   let min = 0;
@@ -1200,10 +1226,12 @@ ${fileContext}
 1) 仅依据给定文件级结果。
 2) 会议纪要“默认通过”仅在 hasSubstantiveNonMinutes=true 时可作为加分/佐证，不可单独决定完成。
 3) 若 hasSubstantiveNonMinutes=false，则最终不允许给出“完成”。
+4) scoring_fields.rule_type 必须按指标真实口径选择：有明确数值目标用 numeric_positive/numeric_negative/count；有百分号目标用 percentage；只有明确计划节点/预期完工标准/阶段交付成果，且证据能抽出计划时间与实际完成时间、提前/拖期/按期事实时，才允许用 milestone。严禁把所有指标默认归为 milestone。
+5) milestone 必须尽量给出 early_days 或 delayed_days；确认为按期但无提前/拖期时，early_days=0、delayed_days=0、on_time=true；无法判断时间差时 rule_type 用 ai_fallback。
 
 已知 hasSubstantiveNonMinutes=${hasSubstantiveNonMinutes}.
 
-输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "scoring_fields":{"rule_type":"numeric_positive/numeric_negative/count/percentage/milestone/ai_fallback","target_value":数字或null,"actual_value":数字或null,"baseline_value":数字或null,"has_challenge":true/false,"challenge_met":true/false,"early_days":数字,"delayed_days":数字,"use_milestone_rule":true/false,"calculation_note":"字段提取说明"}, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"里程碑节点","raw_excerpt":"原文","summary":"该里程碑节点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
+输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "scoring_fields":{"rule_type":"numeric_positive/numeric_negative/count/percentage/milestone/ai_fallback","target_value":数字或null,"actual_value":数字或null,"baseline_value":数字或null,"has_challenge":true/false/null,"challenge_met":true/false/null,"early_days":数字或null,"delayed_days":数字或null,"on_time":true/false/null,"use_milestone_rule":true/false,"calculation_note":"字段提取说明"}, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"证据点","raw_excerpt":"原文","summary":"该证据点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
 
         let aggResp = "";
         try {

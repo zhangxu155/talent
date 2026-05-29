@@ -1441,7 +1441,7 @@ ${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
         return `          { "subject": "${d}", "score": 0-8, "baseline": 5, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }`;
       }).join(",\n");
 
-      const compPrompt = `你是一个资深组织发展专家。对比该员工的【实际业绩产出】与【岗位要求/胜任力模型】，评估其胜任力匹配度与发展潜力。
+      const compPrompt = `你是一个资深组织发展专家。对比该员工的【实际业绩产出】与【岗位要求/胜任力模型】，评估其综合评分与发展潜力。
       【岗位要求/胜任力模型】: ${capabilityText.substring(0, 3000)}
       【简历信息】: ${resumeText.substring(0, 3000)}
       【实际审计结果】: ${JSON.stringify(resList.slice(0, 20))}
@@ -1525,7 +1525,7 @@ ${dimSchemaText}
       数据参考：
       - 指标达成总分: ${totalScoreValue.toFixed(1)}
       - 额外价值创造得分: ${valueCreationRes.score}
-      - 岗位胜任力匹配度: ${compAnalysis.fit_score}
+      - 岗位综合评分: ${compAnalysis.fit_score}
       - 潜力评级: ${compAnalysis.potential_level}
       - 指标总数: ${resList.length}
       
@@ -2865,7 +2865,7 @@ function ReportView({
                     </ResponsiveContainer>
                   </div>
                   <div className="text-center">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">能力匹配大盘</span>
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">综合评分</span>
                     <span className="text-6xl font-black text-indigo-600 tabular-nums">{Number(competencyAnalysis?.fit_score || 0).toFixed(1)}分</span>
                   </div>
                 </div>
@@ -3140,7 +3140,7 @@ function ReportView({
                       </ResponsiveContainer>
                     </div>
                     <div className="text-center">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">胜任力匹配度</span>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">综合评分</span>
                       <span className="text-3xl font-black text-indigo-600">{Number(competencyAnalysis?.fit_score || 0).toFixed(1)}分</span>
                     </div>
                   </div>

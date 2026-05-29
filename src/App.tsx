@@ -655,6 +655,24 @@ function pickCapabilityModelTextOnly(jdCombinedText: string): string {
 }
 
 
+
+function extractVehicleProjectCodes(items: any[]): string[] {
+  const text = items
+    .map((item) => [item?.title, item?.benchmark, item?.evidence, item?.target_benchmark, item?.actual_value, item?.evidence_summary].filter(Boolean).join(" "))
+    .join(" ");
+  const matches = text.match(/(?:^|[^A-Za-z0-9])([PE][A-Za-z0-9]*\d[A-Za-z0-9]*)(?=$|[^A-Za-z0-9])/g) || [];
+  const codes = matches
+    .map((m) => (m.match(/[PE][A-Za-z0-9]*\d[A-Za-z0-9]*/) || [""])[0])
+    .filter(Boolean);
+  return Array.from(new Set(codes));
+}
+
+function buildProductProjectValueText(projectCodes: string[]): string | null {
+  if (projectCodes.length === 0) return null;
+  const display = projectCodes.slice(0, 4).join("、");
+  return `主导完成${display}等${projectCodes.length}个车型项目，${display}市场表现良好`;
+}
+
 function getEvaluationPeriodLabel(period?: { start?: string; end?: string } | null): string {
   const startYear = String(period?.start || "").match(/\d{4}/)?.[0] || "";
   const endYear = String(period?.end || "").match(/\d{4}/)?.[0] || "";
@@ -1534,6 +1552,7 @@ ${dimSchemaText}
       2. 核心优势（core_strengths）和改进建议（improvements）：必须直接从上面的【可引用指标标题池】中选择最相关的指标名称进行引用。严禁捏造任何不在池中的项目名称。
       3. 综合评价（general_eval）：请务必整合“任务指标达成”与“团队培养/能力沉淀”两个维度。如果没有明确的团队培养数据，请基于其岗位级别（领军人才）给出合理的专业建议。
       4. 价值创造部分（value_creation_details）：请务必一一对照审计证据库。如果在“产品项目”、“经营收益”、“技术创新”、“行业影响”四个维度中，某一项【缺乏具体交付物数据证据】支撑，则该项务必返回 null。严禁使用通用套话。
+      5. 产品项目定义：只要审计数据中涉及 P 或 E 开头的项目号（如 P717、E900），均归为“产品项目”。product_projects 请使用固定话术：“主导完成XX等XX个车型项目，XX市场表现良好”。
       
       请严格按照以下 JSON 格式输出：
       {
@@ -1559,7 +1578,7 @@ ${dimSchemaText}
       }`;
       
       console.log("Starting Overall Summary generation...");
-      let overallSum = { 
+      let overallSum: any = { 
         core_conclusion: "评估已完成", 
         general_eval: "审计引擎已完成对交付物的深度扫描。", 
         core_strengths: "证据链完整度高", 
@@ -1573,6 +1592,17 @@ ${dimSchemaText}
         const parsed = extractJSON(summaryResp);
         if (parsed && parsed.general_eval) overallSum = parsed;
       } catch (e) { console.error("Overall Summary AI failed:", e); }
+      const productProjectCodes = extractVehicleProjectCodes(auditContext);
+      const productProjectText = buildProductProjectValueText(productProjectCodes);
+      if (productProjectText) {
+        overallSum = {
+          ...overallSum,
+          value_creation_details: {
+            ...((overallSum as any).value_creation_details || {}),
+            product_projects: productProjectText
+          }
+        };
+      }
       setOverallSummary(overallSum);
       console.log("Overall Summary done.");
 

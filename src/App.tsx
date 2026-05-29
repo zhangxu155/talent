@@ -51,6 +51,7 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
+  Legend,
   ResponsiveContainer, 
   Cell,
   Rectangle,
@@ -2813,22 +2814,33 @@ function ReportView({
                    <div className="size-64 mb-6">
                     <ResponsiveContainer width="100%" height="100%">
                       <RadarChart cx="50%" cy="50%" outerRadius="70%" data={competencyAnalysis?.radar_data || []}>
-                        <PolarGrid stroke="#e2e8f0" />
+                        <PolarGrid stroke="#e5e7eb" />
                         <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
-                        <PolarRadiusAxis domain={[0, 8]} tickCount={5} />
+                        <PolarRadiusAxis domain={[0, 8]} tick={false} axisLine={false} />
                         <Radar
-                          name="人才表现"
+                          name="2025"
                           dataKey="score"
-                          stroke="#4f46e5"
-                          fill="#4f46e5"
-                          fillOpacity={0.6}
+                          stroke="#2563eb"
+                          strokeWidth={2.5}
+                          fill="transparent"
+                          fillOpacity={0}
+                          dot={false}
                         />
                         <Radar
-                          name="基准管"
+                          name="基准线"
                           dataKey="baseline"
-                          stroke="#94a3b8"
+                          stroke="#f97316"
+                          strokeWidth={2.5}
                           fill="transparent"
-                          strokeDasharray="4 4"
+                          fillOpacity={0}
+                          dot={false}
+                        />
+                        <Legend
+                          iconType="plainline"
+                          align="right"
+                          verticalAlign="middle"
+                          layout="vertical"
+                          wrapperStyle={{ fontSize: 12, fontWeight: 800, right: -20 }}
                         />
                       </RadarChart>
                     </ResponsiveContainer>
@@ -3078,15 +3090,32 @@ function ReportView({
                     <div className="size-48 mb-4 relative">
                       <ResponsiveContainer width="100%" height="100%">
                         <RadarChart cx="50%" cy="50%" outerRadius="60%" data={competencyAnalysis?.radar_data || []}>
-                          <PolarGrid stroke="#e2e8f0" />
+                          <PolarGrid stroke="#e5e7eb" />
                           <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
-                          <PolarRadiusAxis domain={[0, 8]} tickCount={5} />
+                          <PolarRadiusAxis domain={[0, 8]} tick={false} axisLine={false} />
                           <Radar
-                            name="表现"
+                            name="2025"
                             dataKey="score"
-                            stroke="#4f46e5"
-                            fill="#4f46e5"
-                            fillOpacity={0.5}
+                            stroke="#2563eb"
+                            strokeWidth={2.25}
+                            fill="transparent"
+                            fillOpacity={0}
+                            dot={false}
+                          />
+                          <Radar
+                            name="基准线"
+                            dataKey="baseline"
+                            stroke="#f97316"
+                            strokeWidth={2.25}
+                            fill="transparent"
+                            fillOpacity={0}
+                            dot={false}
+                          />
+                          <Legend
+                            iconType="plainline"
+                            align="center"
+                            verticalAlign="bottom"
+                            wrapperStyle={{ fontSize: 10, fontWeight: 800 }}
                           />
                         </RadarChart>
                       </ResponsiveContainer>

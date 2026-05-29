@@ -653,6 +653,32 @@ function pickCapabilityModelTextOnly(jdCombinedText: string): string {
   return matched.join("\n\n");
 }
 
+function normalizeCompetencyDimScore(value: any): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  const scaled = num > 8 ? num / 15 : num;
+  return Math.max(0, Math.min(8, Number(scaled.toFixed(1))));
+}
+
+function normalizeCompetencyFitScore(value: any, radarData: any[] = []): number {
+  const num = Number(value);
+  if (Number.isFinite(num) && num > 0) {
+    const scaled = num > 8 ? num / 12.5 : num;
+    return Math.max(0, Math.min(8, Number(scaled.toFixed(1))));
+  }
+  const avg = radarData.reduce((acc, d) => acc + (Number(d.score) || 0), 0) / Math.max(1, radarData.length);
+  return Math.max(0, Math.min(8, Number(avg.toFixed(1))));
+}
+
+function getCompetencyScoreLevel(score: any): string {
+  const v = Number(score) || 0;
+  if (v >= 7 && v <= 8) return "标杆卓越";
+  if (v >= 6) return "优秀突出";
+  if (v >= 5) return "达标合格";
+  if (v >= 4) return "偏弱不足";
+  return "严重缺失";
+}
+
 function normalizeRadarData(data: any, requiredDims: string[]) {
   const arr = Array.isArray(data) ? data : [];
   const bySubject = new Map<string, any>();
@@ -665,11 +691,12 @@ function normalizeRadarData(data: any, requiredDims: string[]) {
 
   const result = requiredDims.map((subject, idx) => {
     const existing = bySubject.get(subject) || {};
-    const baseline = idx < 2 ? 80 : idx === 2 ? 85 : idx === 3 ? 90 : 80;
+    const score = normalizeCompetencyDimScore(existing.score);
     return {
       subject,
-      score: Math.max(0, Math.min(120, Number(existing.score) || 0)),
-      baseline: Math.max(0, Math.min(120, Number(existing.baseline) || baseline)),
+      score,
+      baseline: 5,
+      level: String(existing.level || getCompetencyScoreLevel(score)),
       conclusion: String(existing.conclusion || "能力表现稳定，符合岗位预期要求。"),
       evidence: String(existing.evidence || "当前证据链对该维度有基础支撑，建议持续补强量化成果。"),
       logic: String(existing.logic || "综合岗位要求、实际交付与协同表现进行评估。")
@@ -903,7 +930,7 @@ export default function App() {
     ];
 
     const mockCompetency = {
-      fit_score: 88,
+      fit_score: 7.1,
       fit_eval: "总体评价：该专家具有极强的车辆动力学专业背景，在 P717 等多个量产项目中验证了其卓越的分析与方案交付能力。其技术路线规划能力（P8 级核心要求）在虚拟标定体系建设中得到了充分体现，但在跨部门大规模团队的行政管理与战略统筹方面，基于现有交付物证据，仍有进一步释放领导力的空间。",
       strengths: [
         "精通车辆动力学多体仿真及 K&C 指标优化（证据：P717 方案评审）",
@@ -915,11 +942,11 @@ export default function App() {
         "在大型团队的管理效能提升方面缺乏量化闭环证据"
       ],
       radar_data: [
-        { subject: '动力学分析优化', score: 95, baseline: 80 },
-        { subject: '目标定义规划', score: 90, baseline: 80 },
-        { subject: '标准规范制定', score: 85, baseline: 75 },
-        { subject: '技术攻坚工具', score: 92, baseline: 70 },
-        { subject: '团队赋能协作', score: 78, baseline: 85 },
+        { subject: '动力学分析优化', score: 7.4, baseline: 5, level: '标杆卓越' },
+        { subject: '目标定义规划', score: 7.0, baseline: 5, level: '优秀突出' },
+        { subject: '标准规范制定', score: 6.5, baseline: 5, level: '优秀突出' },
+        { subject: '技术攻坚工具', score: 7.2, baseline: 5, level: '标杆卓越' },
+        { subject: '团队赋能协作', score: 5.8, baseline: 5, level: '达标合格' },
       ]
     };
 
@@ -1404,9 +1431,8 @@ ${fileContext}
 ${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
         : `能力模型中未稳定提取到额外维度，请仅输出四个核心维度。`;
 
-      const dimSchemaText = dimPool.map((d, idx) => {
-        const baseline = idx < 2 ? 80 : idx === 2 ? 85 : idx === 3 ? 90 : 80;
-        return `          { "subject": "${d}", "score": 0-120, "baseline": ${baseline}, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }`;
+      const dimSchemaText = dimPool.map((d) => {
+        return `          { "subject": "${d}", "score": 0-8, "baseline": 5, "level": "标杆卓越/优秀突出/达标合格/偏弱不足/严重缺失", "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }`;
       }).join(",\n");
 
       const compPrompt = `你是一个资深组织发展专家。对比该员工的【实际业绩产出】与【岗位要求/胜任力模型】，评估其胜任力匹配度与发展潜力。
@@ -1422,10 +1448,16 @@ ${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
       4. 技术突破攻坚力
       ${dimRulesText}
       最终 radar_data 仅允许包含上述维度集合，不允许新增其它维度名。
+
+      【能力胜任评分规则】：
+      - 每个 radar_data.score 评分区间为 0-8，精确到小数点后 1 位。
+      - baseline 固定为 5。
+      - 分档：[8,7] 标杆卓越；(7,6] 优秀突出；(6,5] 达标合格；(5,4] 偏弱不足；(4,0] 严重缺失。
+      - fit_score 也使用 0-8 分制，建议取各维度综合匹配得分。
       
       请严格按照以下格式输出 JSON:
       {
-        "fit_score": 0-100,
+        "fit_score": 0-8,
         "fit_eval": "对该员工岗位适配度的定性评价",
         "radar_data": [
 ${dimSchemaText}
@@ -1457,17 +1489,7 @@ ${dimSchemaText}
         }
       } catch (e) { console.error("Competency Analysis AI failed:", e); }
       compAnalysis.radar_data = normalizeRadarData(compAnalysis.radar_data, dimPool);
-      compAnalysis.fit_score = Math.max(
-        0,
-        Math.min(
-          100,
-          Number(compAnalysis.fit_score) ||
-            Math.round(
-              compAnalysis.radar_data.reduce((acc: number, d: any) => acc + (Number(d.score) || 0), 0) /
-              Math.max(1, compAnalysis.radar_data.length)
-            )
-        )
-      );
+      compAnalysis.fit_score = normalizeCompetencyFitScore(compAnalysis.fit_score, compAnalysis.radar_data);
       compAnalysis.fit_eval = String(compAnalysis.fit_eval || "基于岗位要求与交付证据，已完成能力匹配评估。");
       compAnalysis.potential_level = String(compAnalysis.potential_level || "B");
       compAnalysis.recommendation = String(compAnalysis.recommendation || "建议围绕关键维度持续补强证据闭环。");
@@ -2803,6 +2825,7 @@ function ReportView({
                       <RadarChart cx="50%" cy="50%" outerRadius="70%" data={competencyAnalysis?.radar_data || []}>
                         <PolarGrid stroke="#e2e8f0" />
                         <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
+                        <PolarRadiusAxis domain={[0, 8]} tickCount={5} />
                         <Radar
                           name="人才表现"
                           dataKey="score"
@@ -2822,7 +2845,7 @@ function ReportView({
                   </div>
                   <div className="text-center">
                     <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">能力匹配大盘</span>
-                    <span className="text-6xl font-black text-indigo-600 tabular-nums">{competencyAnalysis?.fit_score || 0}%</span>
+                    <span className="text-6xl font-black text-indigo-600 tabular-nums">{competencyAnalysis?.fit_score || 0}分</span>
                   </div>
                 </div>
                 <div className="lg:col-span-7 flex flex-col justify-center space-y-6">
@@ -2862,7 +2885,7 @@ function ReportView({
                       <div className="flex items-end flex-col">
                         <div className="flex items-baseline gap-2">
                           <span className="text-4xl font-black text-indigo-600">{dim.score}</span>
-                          <span className="text-sm text-slate-400">/ 基准 {dim.baseline || 80}</span>
+                          <span className="text-sm text-slate-400">/ 基准 {dim.baseline || 5}</span>
                         </div>
                         <span className="text-[10px] font-bold text-slate-400 uppercase">Dimension Performance</span>
                       </div>
@@ -3067,6 +3090,7 @@ function ReportView({
                         <RadarChart cx="50%" cy="50%" outerRadius="60%" data={competencyAnalysis?.radar_data || []}>
                           <PolarGrid stroke="#e2e8f0" />
                           <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
+                          <PolarRadiusAxis domain={[0, 8]} tickCount={5} />
                           <Radar
                             name="表现"
                             dataKey="score"
@@ -3079,7 +3103,7 @@ function ReportView({
                     </div>
                     <div className="text-center">
                       <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">胜任力匹配度</span>
-                      <span className="text-3xl font-black text-indigo-600">{competencyAnalysis?.fit_score || 0}%</span>
+                      <span className="text-3xl font-black text-indigo-600">{competencyAnalysis?.fit_score || 0}分</span>
                     </div>
                   </div>
 

@@ -359,9 +359,15 @@ async function extractImageTextWithOCR(filePath: string): Promise<string> {
 function normalizeOfficeParserText(data: any): string {
   if (!data) return "";
   if (typeof data === "string") return data.trim();
-  if (typeof data.toText === "function") return String(data.toText() || "").trim();
-  if (typeof data === "object") {
-    return String(data.text || data.data || data.content || "").trim();
+  if (data && typeof data.toText === "function") return String(data.toText() || "").trim();
+  if (data && typeof data === "object") {
+    const directText = String(data.text || data.data || data.content || "").trim();
+    if (directText) return directText;
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return "";
+    }
   }
   return String(data || "").trim();
 }

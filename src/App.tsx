@@ -654,6 +654,14 @@ function pickCapabilityModelTextOnly(jdCombinedText: string): string {
   return matched.join("\n\n");
 }
 
+
+function getEvaluationPeriodLabel(period?: { start?: string; end?: string } | null): string {
+  const startYear = String(period?.start || "").match(/\d{4}/)?.[0] || "";
+  const endYear = String(period?.end || "").match(/\d{4}/)?.[0] || "";
+  if (startYear && endYear && startYear !== endYear) return `${startYear}-${endYear}`;
+  return endYear || startYear || String(new Date().getFullYear());
+}
+
 function normalizeCompetencyDimScore(value: any): number {
   const num = Number(value);
   if (!Number.isFinite(num) || num <= 0) return 0;
@@ -813,6 +821,7 @@ const api = {
 export default function App() {
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(() => localStorage.getItem('talent_task_id'));
   const [taskStatus, setTaskStatus] = useState<any>(null);
+  const [assessmentPeriod, setAssessmentPeriod] = useState<{ start: string; end: string }>({ start: "", end: "" });
   const [metricFiles, setMetricFiles] = useState<Record<string, any[]>>({}); // clause_id -> files[]
   const [activeStep, setActiveStep] = useState<'create' | 'evidence' | 'status' | 'calibration' | 'report' | 'history'>(() => {
     return (localStorage.getItem('talent_active_step') as any) || 'create';
@@ -975,6 +984,7 @@ export default function App() {
           const { data } = await api.getStatus(currentTaskId);
           if (data) {
             setTaskStatus(data);
+            if (data.assessment_period) setAssessmentPeriod(data.assessment_period);
             
             // Auto-resume logic removed as flow has changed
             if (data.status === 'PARSING' || data.status === 'MATCHING') {
@@ -1040,7 +1050,10 @@ export default function App() {
       interval = setInterval(async () => {
         try {
           const { data } = await api.getStatus(currentTaskId);
-          if (data) setTaskStatus(data);
+          if (data) {
+            setTaskStatus(data);
+            if (data.assessment_period) setAssessmentPeriod(data.assessment_period);
+          }
           if (data && data.status === 'WAITING_MANUAL_REVIEW') {
             setActiveStep('calibration');
             const { data: evData } = await api.getEvidences(currentTaskId);
@@ -1076,6 +1089,8 @@ export default function App() {
       start: (form.elements.namedItem('start') as HTMLInputElement).value,
       end: (form.elements.namedItem('end') as HTMLInputElement).value,
     };
+
+    setAssessmentPeriod({ start: formData.start, end: formData.end });
 
     const finalContractText = isManualEdit ? manualContractText : (contractPreview?.text || "");
     const jdText = (form.elements.namedItem('jd_text') as HTMLInputElement).value;
@@ -1824,7 +1839,8 @@ ${dimSchemaText}
                     competencyAnalysis={competencyAnalysis}
                     valueCreation={valueCreation}
                     onReset={handleReset} 
-                    taskId={currentTaskId} 
+                    taskId={currentTaskId}
+                    assessmentPeriod={assessmentPeriod}
                   />
                 </motion.div>
               )}
@@ -2567,7 +2583,8 @@ function ReportView({
   competencyAnalysis,
   valueCreation,
   onReset,
-  taskId
+  taskId,
+  assessmentPeriod
 }: { 
   overallSummary: any, 
   categoryStats: any[], 
@@ -2579,9 +2596,11 @@ function ReportView({
   competencyAnalysis: any,
   valueCreation: any,
   onReset: () => void,
-  taskId: string | null
+  taskId: string | null,
+  assessmentPeriod?: { start?: string; end?: string }
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const radarPeriodLabel = getEvaluationPeriodLabel(assessmentPeriod);
 
   // Group by Category for the Details tab
   const groupedByCat = results.reduce((acc: any, curr: any) => {
@@ -2818,7 +2837,7 @@ function ReportView({
                         <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
                         <PolarRadiusAxis domain={[0, 8]} tick={false} axisLine={false} />
                         <Radar
-                          name="2025"
+                          name={radarPeriodLabel}
                           dataKey="score"
                           stroke="#2563eb"
                           strokeWidth={2.5}
@@ -3094,7 +3113,7 @@ function ReportView({
                           <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
                           <PolarRadiusAxis domain={[0, 8]} tick={false} axisLine={false} />
                           <Radar
-                            name="2025"
+                            name={radarPeriodLabel}
                             dataKey="score"
                             stroke="#2563eb"
                             strokeWidth={2.25}

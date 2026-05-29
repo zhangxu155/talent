@@ -1108,6 +1108,7 @@ async function startServer() {
       data: task ? { 
         status: task.status, 
         progress: task.progress,
+        assessment_period: task.assessment_period,
         contractText: task.contract_file?.text,
         deliverables: task.deliverable_files.map(f => ({ name: f.name, text: f.text }))
       } : {} 

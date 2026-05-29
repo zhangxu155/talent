@@ -1328,9 +1328,9 @@ export default function App() {
             if (afterText.length < beforeLen) {
               localModelLog = ` (🔍 本地PDF大文件智能降维: 从 ${beforeLen} 字缩至 ${afterText.length} 字)`;
             }
-            return { name: f.name, text: afterText };
+            return { ...f, name: f.name, text: afterText };
           }
-          return { name: f.name, text: textVal };
+          return { ...f, name: f.name, text: textVal };
         });
 
         setTaskStatus(prev => ({ 

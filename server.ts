@@ -1301,6 +1301,8 @@ async function startServer() {
         console.warn("Filename decoding failed, using raw name", err);
       }
       const text = await extractFileText(f.path, f.originalname, aiConfig);
+      const preview = String(text || "").replace(/\s+/g, " ").slice(0, 500);
+      console.log(`[QUICK_EXTRACT][${f.originalname}] extracted length=${String(text || "").length} preview=${preview}`);
       res.json({ code: 200, data: { extractedText: text } });
     } catch (e: any) {
       console.error("Quick extraction error:", e);

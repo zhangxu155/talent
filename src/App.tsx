@@ -167,6 +167,27 @@ function inferScoringFieldsFromTarget(targetText: string) {
   return { rule_type: "numeric_positive", target_value: targetValue, inferred_from_target: true };
 }
 
+function buildAuditDebugFiles(perFileAudits: any[]) {
+  return (perFileAudits || []).map((f: any) => ({
+    file_name: f.file_name,
+    is_meeting_minutes: Boolean(f.is_meeting_minutes),
+    has_substantive_evidence: Boolean(f.has_substantive_evidence),
+    completion_status: f.completion_status || "未知",
+    score: Number(f.score) || 0,
+    scoring_facts_count: Array.isArray(f.scoring_facts) ? f.scoring_facts.length : 0,
+    scoring_facts: Array.isArray(f.scoring_facts) ? f.scoring_facts.slice(0, 5) : [],
+    evidence_count: Array.isArray(f.extracted_evidences) ? f.extracted_evidences.length : 0,
+    evidence_preview: Array.isArray(f.extracted_evidences)
+      ? f.extracted_evidences.slice(0, 3).map((ev: any) => ({
+          title: ev?.title || "",
+          raw_excerpt: String(ev?.raw_excerpt || "").slice(0, 240),
+          confidence: ev?.confidence
+        }))
+      : [],
+    summary: String(f.summary || "").slice(0, 240)
+  }));
+}
+
 function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[]) {
   const fields = parsedAudit?.scoring_fields || parsedAudit?.scoring_detail || {};
   const inferred = inferScoringFieldsFromTarget(clause?.target_description || clause?.title || "");
@@ -202,6 +223,7 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
     ai_score: clampScore(Number(parsedAudit?.score) || 0),
     formula: actualSupportedByEvidence ? "字段不完整或规则类型不明确，沿用AI赋分" : "AI返回的实际值未在文件级证据中命中，忽略该实际值并沿用AI赋分",
     evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean),
+    audit_files: buildAuditDebugFiles(perFileAudits),
     inferred_from_target: Boolean(inferred.inferred_from_target && !(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type))
   };
 
@@ -1437,7 +1459,8 @@ ${fileContext}
               ai_score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
               final_score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
               formula: "缺少非纪要实质证据，沿用AI/证据兜底分",
-              evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean)
+              evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean),
+              audit_files: buildAuditDebugFiles(perFileAudits)
             };
         if (scoringDetail.source === "rule_engine") {
           parsedAudit.score = scoringDetail.final_score;

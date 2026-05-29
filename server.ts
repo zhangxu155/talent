@@ -69,6 +69,7 @@ interface EvaluationTask {
   overall_summary?: any;
   category_stats?: any[];
   competency_analysis?: any;
+  debug_scoring_details?: any[];
   created_at?: string;
 }
 
@@ -318,7 +319,34 @@ async function extractPdfTextWithVLM(filePath: string, fileName: string, runtime
 }
 
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
-  // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
+  const ext = path.extname(filePath).toLowerCase();
+
+  // Align runtime OCR behavior with the standalone OCR script:
+  // PDF -> pdftoppm -> tesseract(page by page) -> merged text.
+  if (ext === ".pdf") {
+    let pageImages: string[] = [];
+    try {
+      pageImages = await pdfToImagesWithPdftoppm(filePath, 180);
+      if (pageImages.length === 0) return "";
+
+      const pageTexts: string[] = [];
+      for (let i = 0; i < pageImages.length; i++) {
+        const pageNo = i + 1;
+        const ocr = await runTesseractOCR(pageImages[i]);
+        if (!ocr) continue;
+        pageTexts.push(`# 第 ${pageNo} 页\n\n${ocr}`);
+      }
+      return pageTexts.join("\n\n").trim();
+    } catch (err: any) {
+      console.warn(`[OCR][PDF] pdftoppm+tesseract pipeline failed: ${String(err?.message || err)}`);
+      return "";
+    } finally {
+      const dirs = new Set(pageImages.map(p => path.dirname(p)));
+      dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true }));
+    }
+  }
+
+  // Non-PDF files keep using officeParser OCR fallback.
   return parseOfficeToText(filePath, {
     ocr: true,
     ocrConfig: {
@@ -328,21 +356,71 @@ async function extractImageTextWithOCR(filePath: string): Promise<string> {
   });
 }
 
-async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
-  try {
-    const ast = await officeParser.parseOffice(filePath, options);
-    if (ast && typeof ast.toText === "function") {
-      return String(ast.toText() || "").trim();
+function normalizeOfficeParserText(data: any): string {
+  if (!data) return "";
+  if (typeof data === "string") return data.trim();
+  if (data && typeof data.toText === "function") return String(data.toText() || "").trim();
+  if (data && typeof data === "object") {
+    const directText = String(data.text || data.data || data.content || "").trim();
+    if (directText) return directText;
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return "";
     }
-    if (typeof ast === "string") return ast.trim();
-    if (ast && typeof ast === "object") {
-      return String((ast as any).text || "").trim();
-    }
-    return "";
-  } catch (err: any) {
-    console.warn("officeParser parse failed:", err.message);
-    return "";
   }
+  return String(data || "").trim();
+}
+
+async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (text: string) => {
+      if (settled) return;
+      settled = true;
+      resolve(String(text || "").trim());
+    };
+
+    const callback = (data: any, err: any) => {
+      if (err) {
+        console.warn("officeParser parse failed:", err.message || err);
+        finish("");
+        return;
+      }
+      finish(normalizeOfficeParserText(data));
+    };
+
+    try {
+      const maybePromise = Object.keys(options || {}).length > 0
+        ? officeParser.parseOffice(filePath, callback, options)
+        : officeParser.parseOffice(filePath, callback);
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise
+          .then((data: any) => finish(normalizeOfficeParserText(data)))
+          .catch((err: any) => {
+            console.warn("officeParser parse failed:", err.message || err);
+            finish("");
+          });
+      }
+    } catch (err: any) {
+      console.warn("officeParser parse failed:", err.message || err);
+      finish("");
+    }
+  });
+}
+
+function logPptxModelInput(prompt: string) {
+  const rawPrompt = String(prompt || "");
+  const fileMatch = rawPrompt.match(/当前交付物文件：([^\n\r]+\.(?:pptx|ppt))\b/i);
+  if (!fileMatch) return;
+
+  const fileName = fileMatch[1].trim();
+  const textMatch = rawPrompt.match(/文件文本：[ \t]*(?:\r?\n)([\s\S]*?)(?:\r?\n[ \t]*要求：|\r?\n[ \t]*请输出JSON：|$)/);
+  const modelInputText = textMatch ? textMatch[1].trim() : "";
+  console.log(`\n[PPTX_MODEL_INPUT][${fileName}] length=${modelInputText.length}`);
+  console.log("========== PPTX 输入给模型的解析文本 BEGIN ==========");
+  console.log(modelInputText || "[空文本]");
+  console.log("========== PPTX 输入给模型的解析文本 END ==========\n");
 }
 
 function looksLikeBinaryOrBase64Blob(text: string): boolean {
@@ -467,16 +545,8 @@ export async function extractFileText(
       const data = await mammoth.extractRawText({ buffer });
       extracted = data.value || "";
     } else if (ext === ".doc" || ext === ".pptx" || ext === ".ppt") {
-      extracted = await new Promise((resolve) => {
-        officeParser.parseOffice(filePath, (data: any, err: any) => {
-          if (err || !data) {
-            console.warn(`OfficeParser failed for ${fileName}:`, err);
-            resolve("");
-          } else {
-            resolve(data);
-          }
-        });
-      });
+      extracted = await parseOfficeToText(filePath);
+      console.log(`[PARSE][${traceId}] officeParser text length=${String(extracted || "").length} ext=${ext}`);
     } else if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
       extracted = await extractImageTextWithOCR(filePath);
     } else if (ext === ".txt" || ext === ".md" || ext === ".json" || ext === ".csv") {
@@ -940,11 +1010,20 @@ async function startServer() {
       overall_summary, 
       category_stats,
       competency_analysis,
+      debug_capability_dims,
+      debug_scoring_details,
       status, 
       is_append = true 
     } = req.body;
 
     console.log(`Syncing Task ${req.params.task_id}: is_append=${is_append}, evidences=${evidences?.length}, results=${results?.length}, status=${status}`);
+    if (debug_capability_dims) {
+      console.log(`[CAPABILITY][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
+    if (debug_scoring_details) {
+      task.debug_scoring_details = debug_scoring_details;
+      console.log(`[SCORING][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_scoring_details, null, 2));
+    }
 
     if (!task.evidences) task.evidences = [];
     if (!task.clause_results) task.clause_results = [];
@@ -1024,6 +1103,7 @@ async function startServer() {
       evaluation_period, assessment_period,
       clauses, results, evidences, 
       category_stats, competency_analysis,
+      debug_capability_dims, debug_scoring_details,
       overall_summary, value_creation,
       status 
     } = req.body;
@@ -1050,6 +1130,13 @@ async function startServer() {
     if (overall_summary) task.overall_summary = overall_summary;
     if (value_creation) task.value_creation = value_creation;
     if (status) task.status = status;
+    if (debug_capability_dims) {
+      console.log(`[CAPABILITY][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
+    if (debug_scoring_details) {
+      task.debug_scoring_details = debug_scoring_details;
+      console.log(`[SCORING][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_scoring_details, null, 2));
+    }
 
     console.log(`Upserted Task ${task_id}: status=${task.status}, clauses=${task.clauses?.length}`);
     res.json({ code: 200, message: "Upsert successful", task_id });
@@ -1063,6 +1150,7 @@ async function startServer() {
       data: task ? { 
         status: task.status, 
         progress: task.progress,
+        assessment_period: task.assessment_period,
         contractText: task.contract_file?.text,
         deliverables: task.deliverable_files.map(f => ({ name: f.name, text: f.text }))
       } : {} 
@@ -1086,7 +1174,8 @@ async function startServer() {
         value_creation: task?.value_creation || null,
         overall_summary: task?.overall_summary || null,
         category_stats: task?.category_stats || [],
-        competency_analysis: task?.competency_analysis || null
+        competency_analysis: task?.competency_analysis || null,
+        debug_scoring_details: task?.debug_scoring_details || []
       } 
     });
   });
@@ -1136,9 +1225,10 @@ async function startServer() {
       const body = {
         model: config.localModel || "default",
         messages: [{ role: 'user', content: prompt }],
-        temperature: config.temperature || 0.1
+        temperature: config.temperature ?? 0.1
       };
 
+      logPptxModelInput(prompt);
       console.log(`AI Proxy: Calling ${targetUrl} with model ${body.model}`);
 
       const aiResponse = await fetch(targetUrl, {
@@ -1226,6 +1316,8 @@ async function startServer() {
         console.warn("Filename decoding failed, using raw name", err);
       }
       const text = await extractFileText(f.path, f.originalname, aiConfig);
+      const preview = String(text || "").replace(/\s+/g, " ").slice(0, 500);
+      console.log(`[QUICK_EXTRACT][${f.originalname}] extracted length=${String(text || "").length} preview=${preview}`);
       res.json({ code: 200, data: { extractedText: text } });
     } catch (e: any) {
       console.error("Quick extraction error:", e);

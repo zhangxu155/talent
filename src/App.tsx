@@ -51,6 +51,7 @@ import {
   YAxis, 
   CartesianGrid, 
   Tooltip, 
+  Legend,
   ResponsiveContainer, 
   Cell,
   Rectangle,
@@ -63,6 +64,250 @@ import {
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
+}
+
+function clampScore(value: number, min = 0, max = 120): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function parseScoreNumber(value: any): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw = String(value).trim();
+  if (!raw || /无|未知|不适用|N\/?A/i.test(raw)) return null;
+  const match = raw.replace(/，/g, "").match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const num = Number(match[0]);
+  if (!Number.isFinite(num)) return null;
+  if (/%/.test(raw) && num <= 1) return num * 100;
+  return num;
+}
+
+function pickFirstNumber(...values: any[]): number | null {
+  for (const value of values) {
+    const parsed = parseScoreNumber(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function trimNumberZeros(value: string): string {
+  return value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
+function numberAppearsInAuditEvidence(value: number | null, perFileAudits: any[]): boolean {
+  if (value === null) return true;
+  const snippets = (perFileAudits || []).flatMap((audit: any) => [
+    ...(Array.isArray(audit?.scoring_facts) ? audit.scoring_facts.map((fact: any) => fact?.raw_excerpt) : []),
+    ...(Array.isArray(audit?.extracted_evidences) ? audit.extracted_evidences.map((ev: any) => ev?.raw_excerpt) : [])
+  ]).filter(Boolean);
+  const evidenceText = snippets.join("\n");
+  if (!evidenceText) return false;
+
+  const candidates = Array.from(new Set([
+    trimNumberZeros(String(value)),
+    trimNumberZeros(value.toFixed(1)),
+    trimNumberZeros(value.toFixed(2)),
+    trimNumberZeros(value.toFixed(3)),
+    value.toFixed(1),
+    value.toFixed(2),
+    value.toFixed(3)
+  ].filter(Boolean)));
+
+  return candidates.some((candidate) => {
+    const pattern = new RegExp(`(^|[^0-9.])${escapeRegExp(candidate)}([^0-9.]|$)`);
+    return pattern.test(evidenceText);
+  });
+}
+
+function parseOptionalBoolean(value: any): boolean | null {
+  if (value === true || value === false) return value;
+  if (value === null || value === undefined) return null;
+  const raw = String(value).trim().toLowerCase();
+  if (!raw || /未知|不确定|无|不适用|n\/?a/.test(raw)) return null;
+  if (/^(true|yes|y|1|是|有|达成|已达成|完成)$/.test(raw)) return true;
+  if (/^(false|no|n|0|否|无|未达成|未完成)$/.test(raw)) return false;
+  return null;
+}
+
+function normalizeRuleType(value: any): string {
+  const raw = String(value || "").toLowerCase();
+  if (/里程碑|milestone/.test(raw)) return "milestone";
+  if (/百分比|percentage|percent|%/.test(raw)) return "percentage";
+  if (/个数|数量|次数|篇数|count/.test(raw)) return "count";
+  if (/负向|negative|逆向|越低/.test(raw)) return "numeric_negative";
+  if (/数字|数值|正向|numeric|positive|越高/.test(raw)) return "numeric_positive";
+  return "";
+}
+
+
+function inferScoringFieldsFromTarget(targetText: string) {
+  const raw = String(targetText || "");
+  const targetValue = pickFirstNumber(raw);
+  if (targetValue === null) return { rule_type: "", target_value: null, inferred_from_target: false };
+
+  if (/%|百分比|完成率|达成率|覆盖率|占比|比例|准确率|通过率/.test(raw)) {
+    return { rule_type: "percentage", target_value: targetValue, inferred_from_target: true };
+  }
+
+  if (/\d+(?:\.\d+)?\s*(个|项|次|篇|份|套|场|类|人|件|条|本|份次|车型|项目|报告|标准|专利|论文|培训|课程)/.test(raw)) {
+    return { rule_type: "count", target_value: targetValue, inferred_from_target: true };
+  }
+
+  if (/降低|减少|下降|不高于|低于|小于|以内|控制在|缺陷|投诉|成本|周期|时长|延迟|拖期|风险/.test(raw)) {
+    return { rule_type: "numeric_negative", target_value: targetValue, inferred_from_target: true };
+  }
+
+  return { rule_type: "numeric_positive", target_value: targetValue, inferred_from_target: true };
+}
+
+function buildAuditDebugFiles(perFileAudits: any[]) {
+  return (perFileAudits || []).map((f: any) => ({
+    file_name: f.file_name,
+    is_meeting_minutes: Boolean(f.is_meeting_minutes),
+    has_substantive_evidence: Boolean(f.has_substantive_evidence),
+    completion_status: f.completion_status || "未知",
+    score: Number(f.score) || 0,
+    scoring_facts_count: Array.isArray(f.scoring_facts) ? f.scoring_facts.length : 0,
+    scoring_facts: Array.isArray(f.scoring_facts) ? f.scoring_facts.slice(0, 5) : [],
+    evidence_count: Array.isArray(f.extracted_evidences) ? f.extracted_evidences.length : 0,
+    evidence_preview: Array.isArray(f.extracted_evidences)
+      ? f.extracted_evidences.slice(0, 3).map((ev: any) => ({
+          title: ev?.title || "",
+          raw_excerpt: String(ev?.raw_excerpt || "").slice(0, 240),
+          confidence: ev?.confidence
+        }))
+      : [],
+    summary: String(f.summary || "").slice(0, 240)
+  }));
+}
+
+function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[]) {
+  const fields = parsedAudit?.scoring_fields || parsedAudit?.scoring_detail || {};
+  const inferred = inferScoringFieldsFromTarget(clause?.target_description || clause?.title || "");
+  const ruleType = normalizeRuleType(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type || inferred.rule_type);
+  const target = pickFirstNumber(fields.target_value, fields.target, parsedAudit?.target_value, inferred.target_value);
+  const rawActual = pickFirstNumber(fields.actual_value, fields.actual, parsedAudit?.actual_value);
+  const actualSupportedByEvidence = numberAppearsInAuditEvidence(rawActual, perFileAudits);
+  const actual = actualSupportedByEvidence ? rawActual : null;
+  const baseline = pickFirstNumber(fields.baseline_value, fields.baseline, parsedAudit?.baseline_value);
+  const rawEarlyDays = pickFirstNumber(fields.early_days, fields.advance_days, fields.ahead_days, parsedAudit?.early_days);
+  const rawDelayedDays = pickFirstNumber(fields.delayed_days, fields.delay_days, fields.late_days, parsedAudit?.delayed_days);
+  const earlyDays = rawEarlyDays || 0;
+  const delayedDays = rawDelayedDays || 0;
+  const hasChallengeParsed = parseOptionalBoolean(fields.has_challenge ?? parsedAudit?.has_challenge);
+  const challengeMetParsed = parseOptionalBoolean(fields.challenge_met ?? parsedAudit?.challenge_met);
+  const onTimeParsed = parseOptionalBoolean(fields.on_time ?? fields.completed_on_time ?? parsedAudit?.on_time);
+  const useMilestoneRule = parseOptionalBoolean(fields.use_milestone_rule ?? parsedAudit?.use_milestone_rule) === true;
+  const hasChallenge = hasChallengeParsed === true;
+  const challengeMet = challengeMetParsed === true;
+  const hasMilestoneTimingEvidence = rawEarlyDays !== null || rawDelayedDays !== null || onTimeParsed !== null;
+  const detailBase = {
+    source: "ai_fallback",
+    rule_type: ruleType || "ai_fallback",
+    target_value: target,
+    actual_value: actual,
+    rejected_actual_value: actualSupportedByEvidence ? null : rawActual,
+    baseline_value: baseline,
+    early_days: earlyDays,
+    delayed_days: delayedDays,
+    has_challenge: hasChallengeParsed,
+    challenge_met: challengeMetParsed,
+    on_time: onTimeParsed,
+    ai_score: clampScore(Number(parsedAudit?.score) || 0),
+    formula: actualSupportedByEvidence ? "字段不完整或规则类型不明确，沿用AI赋分" : "AI返回的实际值未在文件级证据中命中，忽略该实际值并沿用AI赋分",
+    evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean),
+    audit_files: buildAuditDebugFiles(perFileAudits),
+    inferred_from_target: Boolean(inferred.inferred_from_target && !(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type))
+  };
+
+  let rawScore: number | null = null;
+  let formula = "";
+
+  if (ruleType === "numeric_positive" && target !== null && actual !== null && target !== 0) {
+    rawScore = (actual / target) * 100;
+    formula = "正向数字类：实际值/目标值*100，最高120";
+  } else if (ruleType === "numeric_negative" && target !== null && actual !== null && target !== 0) {
+    rawScore = (2 - actual / target) * 100;
+    formula = "负向数字类：(2-实际值/目标值)*100";
+  } else if (ruleType === "count" && target !== null && actual !== null) {
+    rawScore = 100 + (actual - target) * 2;
+    formula = "个数类：100+(实际值-目标值)*2";
+  } else if (ruleType === "percentage" && target !== null && actual !== null && target !== 0) {
+    if (target === 100 && actual === 100 && useMilestoneRule && hasMilestoneTimingEvidence) {
+      return calculateMilestoneRuleScore({ ...detailBase, rule_type: "milestone" }, earlyDays, delayedDays, hasChallenge, challengeMet, onTimeParsed);
+    }
+    if (actual >= target && target < 100) {
+      rawScore = 100 + ((actual - target) / Math.max(1, 100 - target)) * 20;
+      formula = "百分比类达标超额：100+(实际值-目标值)/(100%-目标值)*20";
+    } else {
+      rawScore = (actual / target) * 100;
+      formula = baseline !== null ? "百分比类未达目标但达到/参考基准：实际值/目标值*100" : "百分比类未达目标：实际值/目标值*100";
+    }
+  } else if (ruleType === "milestone") {
+    if (!hasMilestoneTimingEvidence) {
+      return {
+        ...detailBase,
+        formula: "里程碑提前/拖期/按期字段不完整，沿用AI赋分",
+        missing_fields: ["early_days/delayed_days/on_time"]
+      };
+    }
+    return calculateMilestoneRuleScore(detailBase, earlyDays, delayedDays, hasChallenge, challengeMet, onTimeParsed);
+  }
+
+  if (rawScore === null) return detailBase;
+  const finalScore = clampScore(rawScore);
+  return {
+    ...detailBase,
+    source: "rule_engine",
+    formula,
+    raw_score: Number(rawScore.toFixed(2)),
+    final_score: finalScore
+  };
+}
+
+function calculateMilestoneRuleScore(detailBase: any, earlyDays: number, delayedDays: number, hasChallenge: boolean, challengeMet: boolean, onTime: boolean | null = null) {
+  let rawScore = 100;
+  let formula = "里程碑类：按期完成必达指标=100";
+  let min = 0;
+  let max = 120;
+
+  if (hasChallenge && challengeMet) {
+    if (earlyDays > 0) {
+      rawScore = 110 + (earlyDays / 30) * 10;
+      formula = "挑战指标达成且提前：110+(提前天数/30)*10，上限120";
+    } else if (delayedDays > 0) {
+      rawScore = 110 - (delayedDays / 30) * 10;
+      formula = "挑战指标达成但拖期：110-(拖期天数/30)*10，下限90";
+      min = 90;
+    } else {
+      rawScore = 110;
+      formula = "挑战指标达成且按期：110";
+    }
+  } else if (earlyDays > 0) {
+    rawScore = 100 + (earlyDays / 60) * 20;
+    formula = "无挑战或挑战未达成，必达指标提前：100+(提前天数/60)*20，上限120";
+  } else if (delayedDays > 0) {
+    rawScore = 100 - (delayedDays / 30) * 10;
+    formula = "无挑战或挑战未达成，必达指标拖期：100-(拖期天数/30)*10，下限80";
+    min = 80;
+  }
+
+  const finalScore = clampScore(rawScore, min, max);
+  return {
+    ...detailBase,
+    source: "rule_engine",
+    rule_type: "milestone",
+    formula,
+    raw_score: Number(rawScore.toFixed(2)),
+    final_score: finalScore
+  };
 }
 
 const PolarTick = (props: any) => {
@@ -332,6 +577,274 @@ async function quickExtract(file: File): Promise<string> {
   return "";
 }
 
+async function runWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const safeLimit = Math.max(1, Math.floor(limit || 1));
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+
+  async function runner() {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= items.length) break;
+      results[idx] = await worker(items[idx], idx);
+    }
+  }
+
+  const runners = Array.from({ length: Math.min(safeLimit, items.length) }, () => runner());
+  await Promise.all(runners);
+  return results;
+}
+
+function extractCapabilityItemsFromText(text: string): string[] {
+  const raw = String(text || "");
+  if (!raw.trim()) return [];
+
+  const parseCsvRow = (line: string): string[] => {
+    const cells = String(line || "")
+      .split(/,(?=(?:[^"]*"[^"]*")*[^"]*$)/)
+      .map((c) => c.replace(/^"|"$/g, "").trim());
+    return cells;
+  };
+  const normalizeAbilityItem = (v: string): string => String(v || "")
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/[“”"'`{}[\]<>]/g, "")
+    .replace(/^[①②③④⑤⑥⑦⑧⑨⑩\d\.\、\)\(（）：:、\s]+/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const isCleanAbilityItem = (v: string): boolean => {
+    if (!v) return false;
+    if (v.length < 2 || v.length > 18) return false;
+    if (/[：:，,。；;]/.test(v)) return false;
+    if (/(定性|定量|描述|要求|方法|工具|知识|完成|至少|负责|能力项)/.test(v)) return false;
+    if (/(开发部|事业部|部门|中心|公司|岗位|职级|序列)$/.test(v)) return false;
+    return true;
+  };
+
+  // Priority path 0: parse extracted CSV blocks and only take "能力项" column.
+  // server extracts xlsx/xls as:
+  // --- Sheet: xxx ---
+  // a,b,c
+  // ...
+  // Merge multi-line CSV rows: fields with embedded newlines in quotes can span physical lines.
+  const rawLines = raw.split(/\r?\n/);
+  const merged: string[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    let line = rawLines[i];
+    const quoteCount = (line.match(/"/g) || []).length;
+    if (quoteCount % 2 !== 0) {
+      let j = i + 1;
+      while (j < rawLines.length) {
+        line += "\n" + rawLines[j];
+        const mergedQuotes = (line.match(/"/g) || []).length;
+        if (mergedQuotes % 2 === 0) {
+          i = j;
+          break;
+        }
+        j++;
+      }
+      i = j;
+    }
+    merged.push(line);
+  }
+
+  const csvLines = merged
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .filter((l) => !/^---\s*Sheet:/i.test(l));
+  if (csvLines.length >= 2) {
+    const isHeaderLike = (cells: string[]) => {
+      const hasAbility = cells.some((c) => /能力项/.test(c));
+      const hasSerial = cells.some((c) => /序号/.test(c));
+      const hasDesc = cells.some((c) => /描述|定性|定量/.test(c));
+      return hasAbility && (hasSerial || hasDesc);
+    };
+    const headerIdx = csvLines.findIndex((line) => isHeaderLike(parseCsvRow(line)));
+    if (headerIdx !== -1) {
+      const headerCells = parseCsvRow(csvLines[headerIdx]);
+      const abilityColIdx = headerCells.findIndex((c) => /^能力项$/.test(c.replace(/\s+/g, "")));
+      const serialColIdx = headerCells.findIndex((c) => /序号/.test(c));
+      if (abilityColIdx !== -1) {
+        const fromCsv = csvLines
+          .slice(headerIdx + 1)
+          .map(parseCsvRow)
+          .filter((cells) => cells.length > abilityColIdx)
+          .filter((cells) => {
+            // Skip decorative/title blocks before actual table body.
+            const rowText = cells.join(" ").trim();
+            if (!rowText) return false;
+            if (/P\d+\s*能力项胜任要求|能力项胜任要求|专业设计师|岗位|模型/.test(rowText) && !/^\d+$/.test(String(cells[serialColIdx] || "").trim())) {
+              return false;
+            }
+            // If serial column exists, only keep pure-number rows.
+            return serialColIdx === -1 || /^\d+$/.test(String(cells[serialColIdx] || "").trim());
+          })
+          .map((cells) => normalizeAbilityItem(String(cells[abilityColIdx] || "")))
+          .filter((v) => isCleanAbilityItem(v));
+        const dedupCsv = Array.from(new Set(fromCsv));
+        if (dedupCsv.length > 0) return dedupCsv.slice(0, 30);
+      }
+    }
+  }
+
+  // Priority path: extract only the "能力项" column values when table-like text exists.
+  const tableLines = raw
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean)
+    .filter(l => l.includes("|") || l.includes("｜"));
+  if (tableLines.length >= 2) {
+    const normalized = tableLines.map(l => l.replace(/｜/g, "|"));
+    const splitRow = (line: string) => line.split("|").map(c => c.trim()).filter(c => c.length > 0);
+    const headerIdx = normalized.findIndex((line) => splitRow(line).some(c => /能力项/.test(c)));
+    if (headerIdx !== -1) {
+      const headerCells = splitRow(normalized[headerIdx]);
+      const abilityColIdx = headerCells.findIndex(c => /^能力项$/.test(c.replace(/\s+/g, "")));
+      if (abilityColIdx !== -1) {
+        const fromTable = normalized
+          .slice(headerIdx + 1)
+          .map(splitRow)
+          .filter(cells => cells.length > abilityColIdx)
+          .map(cells => normalizeAbilityItem(cells[abilityColIdx]))
+          .filter(v => isCleanAbilityItem(v));
+        const dedupTable = Array.from(new Set(fromTable));
+        if (dedupTable.length > 0) return dedupTable.slice(0, 20);
+      }
+    }
+  }
+  // Strict mode: only extract from "能力项" column content; never fallback to free-text guessing.
+  return [];
+}
+
+function pickCapabilityModelTextOnly(jdCombinedText: string): string {
+  const raw = String(jdCombinedText || "");
+  if (!raw.trim()) return "";
+  const matched: string[] = [];
+  const sectionRegex = /--- JD\/Model:\s*(.+?)\s*---\n([\s\S]*?)(?=\n{2,}--- JD\/Model:|\s*$)/g;
+  let m: RegExpExecArray | null = null;
+  while ((m = sectionRegex.exec(raw)) !== null) {
+    const fileName = String(m[1] || "").trim();
+    const body = String(m[2] || "").trim();
+    if (/能力模型/.test(fileName) && body) {
+      matched.push(body);
+    }
+  }
+  return matched.join("\n\n");
+}
+
+
+
+function extractVehicleProjectCodes(items: any[]): string[] {
+  const text = items
+    .map((item) => [item?.title, item?.benchmark, item?.evidence, item?.target_benchmark, item?.actual_value, item?.evidence_summary].filter(Boolean).join(" "))
+    .join(" ");
+  const matches = text.match(/(?:^|[^A-Za-z0-9])([PE][A-Za-z0-9]*\d[A-Za-z0-9]*)(?=$|[^A-Za-z0-9])/g) || [];
+  const codes = matches
+    .map((m) => (m.match(/[PE][A-Za-z0-9]*\d[A-Za-z0-9]*/) || [""])[0])
+    .filter(Boolean);
+  return Array.from(new Set(codes));
+}
+
+
+
+function extractTargetTaskItems(text: string): string[] {
+  return String(text || "")
+    .split(/[；;。\n]+/)
+    .map((part) => part
+      .replace(/[（(][^）)]*[）)]/g, "")
+      .replace(/^完成/, "")
+      .replace(/并?通过.*?(评审|验收|批准).*$/g, "")
+      .replace(/[，,、\s]+$/g, "")
+      .trim()
+    )
+    .filter((part) => part.length > 0)
+    .slice(0, 6);
+}
+
+function buildTargetBasedActualValue(clause: any, fallback: string): string {
+  const statusText = String(fallback || "");
+  if (/未完成|无数据|未发现/.test(statusText)) return fallback || "无数据";
+  const target = String(clause?.target_description || "").trim();
+  if (!target || target === "-") return fallback || "无数据";
+
+  const items = extractTargetTaskItems(target);
+  if (items.length === 0) return fallback || "无数据";
+  return `已按节点完成${items.join("、")}，并通过评审。`;
+}
+
+function buildMeetingMinutesCompletionSummary(clause: any): string {
+  const rawTarget = String(clause?.target_description || "").trim();
+  const title = String(clause?.title || "该指标").trim();
+  const source = rawTarget && rawTarget !== "-" ? rawTarget : title;
+  const items = extractTargetTaskItems(source).slice(0, 5);
+
+  if (items.length === 0) {
+    const cleanTitle = title.replace(/^完成/, "").replace(/并?通过.*?(评审|验收|批准).*$/g, "").trim();
+    return `完成${cleanTitle}并通过评审`;
+  }
+
+  return `完成${items.join("、")}并通过评审`;
+}
+
+function buildProductProjectValueText(projectCodes: string[]): string | null {
+  if (projectCodes.length === 0) return null;
+  const display = projectCodes.slice(0, 4).join("、");
+  return `主导完成${display}等${projectCodes.length}个车型项目，并在项目推进、方案交付与跨部门协同中表现较好`;
+}
+
+function getEvaluationPeriodLabel(period?: { start?: string; end?: string } | null): string {
+  const startYear = String(period?.start || "").match(/\d{4}/)?.[0] || "";
+  const endYear = String(period?.end || "").match(/\d{4}/)?.[0] || "";
+  if (startYear && endYear && startYear !== endYear) return `${startYear}-${endYear}`;
+  return endYear || startYear || String(new Date().getFullYear());
+}
+
+function normalizeCompetencyDimScore(value: any): number {
+  const num = Number(value);
+  if (!Number.isFinite(num) || num <= 0) return 0;
+  const scaled = num > 8 ? num / 15 : num;
+  return Math.max(0, Math.min(8, Number(scaled.toFixed(1))));
+}
+
+function normalizeCompetencyFitScore(value: any, radarData: any[] = []): number {
+  const num = Number(value);
+  if (Number.isFinite(num) && num > 0) {
+    const scaled = num > 8 ? num / 12.5 : num;
+    return Math.max(0, Math.min(8, Number(scaled.toFixed(1))));
+  }
+  const avg = radarData.reduce((acc, d) => acc + (Number(d.score) || 0), 0) / Math.max(1, radarData.length);
+  return Math.max(0, Math.min(8, Number(avg.toFixed(1))));
+}
+
+function normalizeRadarData(data: any, requiredDims: string[]) {
+  const arr = Array.isArray(data) ? data : [];
+  const bySubject = new Map<string, any>();
+
+  for (const item of arr) {
+    const subject = String(item?.subject || "").trim();
+    if (!subject) continue;
+    if (!bySubject.has(subject)) bySubject.set(subject, item);
+  }
+
+  const result = requiredDims.map((subject, idx) => {
+    const existing = bySubject.get(subject) || {};
+    const score = normalizeCompetencyDimScore(existing.score);
+    return {
+      subject,
+      score,
+      baseline: 5,
+      conclusion: String(existing.conclusion || "能力表现稳定，符合岗位预期要求。"),
+      evidence: String(existing.evidence || "当前证据链对该维度有基础支撑，建议持续补强量化成果。"),
+      logic: String(existing.logic || "综合岗位要求、实际交付与协同表现进行评估。")
+    };
+  });
+
+  return result;
+}
+
 // --- API Client ---
 const api = {
   createTaskUnsafe: async (formData: FormData) => {
@@ -448,6 +961,7 @@ const api = {
 export default function App() {
   const [currentTaskId, setCurrentTaskId] = useState<string | null>(() => localStorage.getItem('talent_task_id'));
   const [taskStatus, setTaskStatus] = useState<any>(null);
+  const [assessmentPeriod, setAssessmentPeriod] = useState<{ start: string; end: string }>({ start: "", end: "" });
   const [metricFiles, setMetricFiles] = useState<Record<string, any[]>>({}); // clause_id -> files[]
   const [activeStep, setActiveStep] = useState<'create' | 'evidence' | 'status' | 'calibration' | 'report' | 'history'>(() => {
     return (localStorage.getItem('talent_active_step') as any) || 'create';
@@ -556,7 +1070,7 @@ export default function App() {
     ];
 
     const mockCompetency = {
-      fit_score: 88,
+      fit_score: 7.1,
       fit_eval: "总体评价：该专家具有极强的车辆动力学专业背景，在 P717 等多个量产项目中验证了其卓越的分析与方案交付能力。其技术路线规划能力（P8 级核心要求）在虚拟标定体系建设中得到了充分体现，但在跨部门大规模团队的行政管理与战略统筹方面，基于现有交付物证据，仍有进一步释放领导力的空间。",
       strengths: [
         "精通车辆动力学多体仿真及 K&C 指标优化（证据：P717 方案评审）",
@@ -568,11 +1082,11 @@ export default function App() {
         "在大型团队的管理效能提升方面缺乏量化闭环证据"
       ],
       radar_data: [
-        { subject: '动力学分析优化', score: 95, baseline: 80 },
-        { subject: '目标定义规划', score: 90, baseline: 80 },
-        { subject: '标准规范制定', score: 85, baseline: 75 },
-        { subject: '技术攻坚工具', score: 92, baseline: 70 },
-        { subject: '团队赋能协作', score: 78, baseline: 85 },
+        { subject: '动力学分析优化', score: 7.4, baseline: 5 },
+        { subject: '目标定义规划', score: 7.0, baseline: 5 },
+        { subject: '标准规范制定', score: 6.5, baseline: 5 },
+        { subject: '技术攻坚工具', score: 7.2, baseline: 5 },
+        { subject: '团队赋能协作', score: 5.8, baseline: 5 },
       ]
     };
 
@@ -610,6 +1124,7 @@ export default function App() {
           const { data } = await api.getStatus(currentTaskId);
           if (data) {
             setTaskStatus(data);
+            if (data.assessment_period) setAssessmentPeriod(data.assessment_period);
             
             // Auto-resume logic removed as flow has changed
             if (data.status === 'PARSING' || data.status === 'MATCHING') {
@@ -675,7 +1190,10 @@ export default function App() {
       interval = setInterval(async () => {
         try {
           const { data } = await api.getStatus(currentTaskId);
-          if (data) setTaskStatus(data);
+          if (data) {
+            setTaskStatus(data);
+            if (data.assessment_period) setAssessmentPeriod(data.assessment_period);
+          }
           if (data && data.status === 'WAITING_MANUAL_REVIEW') {
             setActiveStep('calibration');
             const { data: evData } = await api.getEvidences(currentTaskId);
@@ -712,11 +1230,14 @@ export default function App() {
       end: (form.elements.namedItem('end') as HTMLInputElement).value,
     };
 
+    setAssessmentPeriod({ start: formData.start, end: formData.end });
+
     const finalContractText = isManualEdit ? manualContractText : (contractPreview?.text || "");
     const jdText = (form.elements.namedItem('jd_text') as HTMLInputElement).value;
+    const capabilityModelText = pickCapabilityModelTextOnly(jdText);
     const resText = (form.elements.namedItem('resume_text') as HTMLInputElement).value;
     
-    setCapabilityText(jdText);
+    setCapabilityText(capabilityModelText || "");
     setResumeText(resText);
     setManualContractText(finalContractText);
 
@@ -792,6 +1313,7 @@ export default function App() {
       // 1. Individual Metric Audit
       const allEvidences: any[] = [];
       const intermediateResults: Record<string, any[]> = {}; 
+      const scoringAiConfig = { ...aiConfig, temperature: Math.min(Number(aiConfig.temperature ?? 0.1), 0.01) };
 
       for (let i = 0; i < clauses.length; i++) {
         const clause = clauses[i];
@@ -806,9 +1328,9 @@ export default function App() {
             if (afterText.length < beforeLen) {
               localModelLog = ` (🔍 本地PDF大文件智能降维: 从 ${beforeLen} 字缩至 ${afterText.length} 字)`;
             }
-            return { name: f.name, text: afterText };
+            return { ...f, name: f.name, text: afterText };
           }
-          return { name: f.name, text: textVal };
+          return { ...f, name: f.name, text: textVal };
         });
 
         setTaskStatus(prev => ({ 
@@ -826,16 +1348,24 @@ export default function App() {
           continue;
         }
 
-        const perFileAudits: any[] = [];
-        for (let fi = 0; fi < optimizedFiles.length; fi++) {
-          const file = optimizedFiles[fi];
-          const fileContext = String(file.text || "").substring(0, aiConfig.provider === 'local' ? 30000 : 40000);
+        const FILE_AUDIT_CONCURRENCY = 4;
+        const perFileAudits = await runWithConcurrency(optimizedFiles, FILE_AUDIT_CONCURRENCY, async (file: any) => {
+          let liveText = String(file.text || "");
+          if (!liveText && file.rawFile instanceof File) {
+            liveText = await quickExtract(file.rawFile);
+          }
+          const fileContext = liveText.substring(0, aiConfig.provider === 'local' ? 10000 : 12000);
           const fileAuditPrompt = `你是一个资深人才评估审计专家。
 待审计指标：【${clause.title}】
 考核基准：${clause.target_description}
 当前交付物文件：${file.name}
 文件文本：
 ${fileContext}
+
+要求：
+1) 若文件原文中出现与该指标实际达成相关的数字，请原样摘录到 scoring_facts；
+2) scoring_facts.value 必须来自文件原文或 raw_excerpt，不允许估算、四舍五入或根据目标反推；
+3) 文件中没有实际达成数字时，scoring_facts 返回空数组。
 
 请输出JSON：
 {
@@ -845,25 +1375,27 @@ ${fileContext}
   "completion_status": "完成/未完成/部分完成",
   "score": 0-120,
   "summary": "该文件对本指标的判断（30-40字）",
+  "scoring_facts": [{"value":数字,"unit":"单位或空","raw_excerpt":"包含该数字的原文片段","meaning":"该数字代表什么"}],
   "extracted_evidences": [{"title":"证据点","raw_excerpt":"原文","summary":"说明","confidence":0.9}]
 }`;
           let fileResp = "";
           try {
-            fileResp = await api.callAI(fileAuditPrompt, aiConfig);
+            fileResp = await api.callAI(fileAuditPrompt, scoringAiConfig);
           } catch (aiErr: any) {
             fileResp = JSON.stringify({ file_name: file.name, is_meeting_minutes: false, has_substantive_evidence: false, completion_status: "未知", score: 0, summary: `文件审计失败: ${aiErr.message}`, extracted_evidences: [] });
           }
           const fileAudit = extractJSON(fileResp) || {};
-          perFileAudits.push({
+          return {
             file_name: file.name,
             is_meeting_minutes: Boolean(fileAudit.is_meeting_minutes),
             has_substantive_evidence: Boolean(fileAudit.has_substantive_evidence),
             completion_status: fileAudit.completion_status || "未知",
             score: Math.max(0, Math.min(120, Number(fileAudit.score) || 0)),
             summary: fileAudit.summary || "",
+            scoring_facts: Array.isArray(fileAudit.scoring_facts) ? fileAudit.scoring_facts : [],
             extracted_evidences: Array.isArray(fileAudit.extracted_evidences) ? fileAudit.extracted_evidences : []
-          });
-        }
+          };
+        });
 
         const hasSubstantiveNonMinutes = perFileAudits.some((f: any) => !f.is_meeting_minutes && f.has_substantive_evidence);
         const aggregatePrompt = `你是人才评估终审专家。请根据文件级审计结果做指标汇总。
@@ -875,14 +1407,18 @@ ${fileContext}
 1) 仅依据给定文件级结果。
 2) 会议纪要“默认通过”仅在 hasSubstantiveNonMinutes=true 时可作为加分/佐证，不可单独决定完成。
 3) 若 hasSubstantiveNonMinutes=false，则最终不允许给出“完成”。
+4) scoring_fields.rule_type 必须按指标真实口径选择：绩效指标/子指标中有数字时，优先判断为数字类、个数类或百分比类；有百分号/完成率/达成率用 percentage；有“个/项/次/篇/份/套/场/类/人/件/车型/项目”等数量单位用 count；其他明确数值目标按正向/负向选择 numeric_positive/numeric_negative。
+5) actual_value 只能来自文件级结果中的 scoring_facts.value 或 extracted_evidences.raw_excerpt 原文数字；不得根据目标值、经验或模型常识补写/四舍五入。如果文件级结果没有抽到该指标实际达成值，actual_value 必须为 null，rule_type 可先按目标类型填写或用 ai_fallback，最终仍按现有证据规则判断。
+6) 只有明确计划节点/预期完工标准/阶段交付成果，且证据能抽出计划时间与实际完成时间、提前/拖期/按期事实时，才允许用 milestone。严禁把所有指标默认归为 milestone。
+7) milestone 必须尽量给出 early_days 或 delayed_days；确认为按期但无提前/拖期时，early_days=0、delayed_days=0、on_time=true；无法判断时间差时 rule_type 用 ai_fallback。
 
 已知 hasSubstantiveNonMinutes=${hasSubstantiveNonMinutes}.
 
-输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"里程碑节点","raw_excerpt":"原文","summary":"该里程碑节点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
+输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "scoring_fields":{"rule_type":"numeric_positive/numeric_negative/count/percentage/milestone/ai_fallback","target_value":数字或null,"actual_value":数字或null,"baseline_value":数字或null,"has_challenge":true/false/null,"challenge_met":true/false/null,"early_days":数字或null,"delayed_days":数字或null,"on_time":true/false/null,"use_milestone_rule":true/false,"calculation_note":"字段提取说明"}, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"证据点","raw_excerpt":"原文","summary":"该证据点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
 
         let aggResp = "";
         try {
-          aggResp = await api.callAI(aggregatePrompt, aiConfig);
+          aggResp = await api.callAI(aggregatePrompt, scoringAiConfig);
         } catch (aiErr: any) {
           aggResp = JSON.stringify({ summary: `汇总审计失败: ${aiErr.message}`, completion_status: "未知", score: 0, adopted_files: [], rejected_files: [], extracted_evidences: [] });
         }
@@ -900,11 +1436,11 @@ ${fileContext}
 
         if (!hasSubstantiveNonMinutes) {
           if (hasMeetingMinutesSupport) {
-            // 仅有会议纪要时，给出“部分完成”而非0分，避免与业务常识冲突。
+            // 仅识别到会议纪要支持时，页面话术仍按完成口径描述，避免暴露“纪要/缺少备证/部分完成”等内部判定。
             parsedAudit.completion_status = "部分完成";
             const rawScore = Number(parsedAudit.score) || 0;
             parsedAudit.score = Math.max(80, Math.min(rawScore, 90));
-            parsedAudit.summary = `已有会议纪要类材料显示“${clause.title}”评审通过，但缺少非纪要细节佐证，当前按“部分完成”计分。已审阅文件数：${perFileAudits.length}。`;
+            parsedAudit.summary = buildMeetingMinutesCompletionSummary(clause);
           } else {
             const noEvidenceFiles = perFileAudits
               .filter((f: any) => !f.has_substantive_evidence)
@@ -914,6 +1450,27 @@ ${fileContext}
             parsedAudit.summary = `未发现可直接证明“${clause.title}”达成的非纪要实质证据；重点核查文件：${noEvidenceFiles || '（未识别到有效文件名）'}。`;
           }
         }
+
+        const scoringDetail = hasSubstantiveNonMinutes
+          ? calculateRuleScore(clause, parsedAudit, perFileAudits)
+          : {
+              source: "ai_fallback",
+              rule_type: "ai_fallback",
+              ai_score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
+              final_score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
+              formula: "缺少非纪要实质证据，沿用AI/证据兜底分",
+              evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean),
+              audit_files: buildAuditDebugFiles(perFileAudits)
+            };
+        if (scoringDetail.source === "rule_engine") {
+          parsedAudit.score = scoringDetail.final_score;
+          parsedAudit.summary = `${parsedAudit.summary || "指标审计完成。"}（系统已按规则引擎复算分数）`;
+        }
+        console.log("[SCORING][DETAIL]", {
+          clause_id: clause.clause_id,
+          title: clause.title,
+          scoring_detail: scoringDetail
+        });
 
         const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];
         // 如果汇总层只返回了单文件证据，补充文件级审计证据，避免“看起来只分析了一个文件”。
@@ -944,7 +1501,8 @@ ${fileContext}
         intermediateResults[clause.clause_id] = [{
           conclusion: parsedAudit.summary,
           score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
-          completion_status: parsedAudit.completion_status
+          completion_status: parsedAudit.completion_status,
+          scoring_detail: scoringDetail
         }];
       }
 
@@ -953,6 +1511,8 @@ ${fileContext}
       
       const resList = clauses.map(c => {
         const audit = intermediateResults[c.clause_id]?.[0] || {};
+        const auditConclusion = audit.conclusion || "无数据";
+        const actualValue = buildTargetBasedActualValue(c, auditConclusion);
         return {
           clause_id: c.clause_id,
           title: c.title,
@@ -961,9 +1521,10 @@ ${fileContext}
           score: Math.max(0, Math.min(120, Number(audit.score) || 0)),
           target_benchmark: c.target_description || "-",
           completion_status: audit.completion_status || "未完成",
-          actual_value: audit.conclusion || "无数据",
+          actual_value: actualValue,
           evidence_summary: audit.conclusion || "未发现支撑材料",
-          matched_evidence_ids: allEvidences.filter(e => e.matched_clause_id === c.clause_id).map(e => e.evidence_id)
+          matched_evidence_ids: allEvidences.filter(e => e.matched_clause_id === c.clause_id).map(e => e.evidence_id),
+          scoring_detail: audit.scoring_detail || null
         };
       });
       setResults(resList);
@@ -1010,7 +1571,30 @@ ${fileContext}
       } catch (e) { console.error("Value Creation AI failed:", e); }
       setValueCreation(valueCreationRes);
 
-      const compPrompt = `你是一个资深组织发展专家。对比该员工的【实际业绩产出】与【岗位要求/胜任力模型】，评估其胜任力匹配度与发展潜力。
+      const coreRadarDims = [
+        "培育与协同力",
+        "创新与战略落地力",
+        "产品履约交付力",
+        "技术突破攻坚力"
+      ];
+      const modelDims = extractCapabilityItemsFromText(capabilityText)
+        .filter((d) => !coreRadarDims.includes(d));
+      const dimPool = [...coreRadarDims, ...modelDims];
+      console.log("[CAPABILITY][DIM_EXTRACT]", {
+        capability_text_preview: capabilityText.substring(0, 400),
+        extracted_model_dims: modelDims,
+        final_dim_pool: dimPool
+      });
+      const dimRulesText = modelDims.length > 0
+        ? `除四个核心维度外，必须额外包含以下能力模型维度（逐项一一输出，不得遗漏、不得改名）：
+${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
+        : `能力模型中未稳定提取到额外维度，请仅输出四个核心维度。`;
+
+      const dimSchemaText = dimPool.map((d) => {
+        return `          { "subject": "${d}", "score": 0-8, "baseline": 5, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }`;
+      }).join(",\n");
+
+      const compPrompt = `你是一个资深组织发展专家。对比该员工的【实际业绩产出】与【岗位要求/胜任力模型】，评估其综合评分与发展潜力。
       【岗位要求/胜任力模型】: ${capabilityText.substring(0, 3000)}
       【简历信息】: ${resumeText.substring(0, 3000)}
       【实际审计结果】: ${JSON.stringify(resList.slice(0, 20))}
@@ -1021,18 +1605,21 @@ ${fileContext}
       2. 创新与战略落地力
       3. 产品履约交付力
       4. 技术突破攻坚力
-      
-      此外，请基于提供的岗位要求和简历信息，补充提取 1-3 个最能体现该岗位核心特质的评价维度（例如：架构设计能力、行业影响力、数据洞察力等）。
+      ${dimRulesText}
+      最终 radar_data 仅允许包含上述维度集合，不允许新增其它维度名。
+
+      【能力胜任评分规则】：
+      - 每个 radar_data.score 评分区间为 0-8，精确到小数点后 1 位。
+      - baseline 固定为 5。
+      - 分档仅作为评分参考：[8,7] 标杆卓越；(7,6] 优秀突出；(6,5] 达标合格；(5,4] 偏弱不足；(4,0] 严重缺失；不要在 radar_data 中输出分档字段。
+      - fit_score 也使用 0-8 分制，建议取各维度综合匹配得分，精确到小数点后 1 位。
       
       请严格按照以下格式输出 JSON:
       {
-        "fit_score": 0-100,
+        "fit_score": 0-8,
         "fit_eval": "对该员工岗位适配度的定性评价",
         "radar_data": [
-          { "subject": "培育与协同力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "创新与战略落地力", "score": 0-120, "baseline": 80, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "产品履约交付力", "score": 0-120, "baseline": 85, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" },
-          { "subject": "技术突破攻坚力", "score": 0-120, "baseline": 90, "conclusion": "评价结论（30-40字）", "evidence": "对应支撑业绩标题或行为表现（30-40字）", "logic": "评估逻辑解析（30-40字）" }
+${dimSchemaText}
         ],
         "strengths": ["优势1", "优势2"],
         "weaknesses": ["改进1", "改进2"],
@@ -1053,8 +1640,18 @@ ${fileContext}
       try {
         const compResp = await api.callAI(compPrompt, aiConfig);
         const parsed = extractJSON(compResp);
-        if (parsed && parsed.fit_score !== undefined) compAnalysis = parsed;
+        if (parsed && (parsed.fit_score !== undefined || Array.isArray(parsed.radar_data))) {
+          compAnalysis = {
+            ...compAnalysis,
+            ...parsed
+          };
+        }
       } catch (e) { console.error("Competency Analysis AI failed:", e); }
+      compAnalysis.radar_data = normalizeRadarData(compAnalysis.radar_data, dimPool);
+      compAnalysis.fit_score = normalizeCompetencyFitScore(compAnalysis.fit_score, compAnalysis.radar_data);
+      compAnalysis.fit_eval = String(compAnalysis.fit_eval || "基于岗位要求与交付证据，已完成能力匹配评估。");
+      compAnalysis.potential_level = String(compAnalysis.potential_level || "B");
+      compAnalysis.recommendation = String(compAnalysis.recommendation || "建议围绕关键维度持续补强证据闭环。");
       setCompetencyAnalysis(compAnalysis);
 
       const auditContext = resList.map(r => ({
@@ -1081,7 +1678,7 @@ ${fileContext}
       数据参考：
       - 指标达成总分: ${totalScoreValue.toFixed(1)}
       - 额外价值创造得分: ${valueCreationRes.score}
-      - 岗位胜任力匹配度: ${compAnalysis.fit_score}
+      - 岗位综合评分: ${compAnalysis.fit_score}
       - 潜力评级: ${compAnalysis.potential_level}
       - 指标总数: ${resList.length}
       
@@ -1090,6 +1687,7 @@ ${fileContext}
       2. 核心优势（core_strengths）和改进建议（improvements）：必须直接从上面的【可引用指标标题池】中选择最相关的指标名称进行引用。严禁捏造任何不在池中的项目名称。
       3. 综合评价（general_eval）：请务必整合“任务指标达成”与“团队培养/能力沉淀”两个维度。如果没有明确的团队培养数据，请基于其岗位级别（领军人才）给出合理的专业建议。
       4. 价值创造部分（value_creation_details）：请务必一一对照审计证据库。如果在“产品项目”、“经营收益”、“技术创新”、“行业影响”四个维度中，某一项【缺乏具体交付物数据证据】支撑，则该项务必返回 null。严禁使用通用套话。
+      5. 产品项目定义：只要审计数据中涉及 P 或 E 开头的项目号（如 P717、E900），均归为“产品项目”。product_projects 请使用固定话术：“主导完成XX等XX个车型项目，并在项目推进、方案交付与跨部门协同中表现较好”。
       
       请严格按照以下 JSON 格式输出：
       {
@@ -1115,7 +1713,7 @@ ${fileContext}
       }`;
       
       console.log("Starting Overall Summary generation...");
-      let overallSum = { 
+      let overallSum: any = { 
         core_conclusion: "评估已完成", 
         general_eval: "审计引擎已完成对交付物的深度扫描。", 
         core_strengths: "证据链完整度高", 
@@ -1129,6 +1727,17 @@ ${fileContext}
         const parsed = extractJSON(summaryResp);
         if (parsed && parsed.general_eval) overallSum = parsed;
       } catch (e) { console.error("Overall Summary AI failed:", e); }
+      const productProjectCodes = extractVehicleProjectCodes(auditContext);
+      const productProjectText = buildProductProjectValueText(productProjectCodes);
+      if (productProjectText) {
+        overallSum = {
+          ...overallSum,
+          value_creation_details: {
+            ...((overallSum as any).value_creation_details || {}),
+            product_projects: productProjectText
+          }
+        };
+      }
       setOverallSummary(overallSum);
       console.log("Overall Summary done.");
 
@@ -1139,6 +1748,16 @@ ${fileContext}
         clauses: clauses,
         category_stats: stats,
         competency_analysis: compAnalysis,
+        debug_capability_dims: {
+          extracted_model_dims: modelDims,
+          final_dim_pool: dimPool
+        },
+        debug_scoring_details: resList.map((r: any) => ({
+          clause_id: r.clause_id,
+          title: r.title,
+          score: r.score,
+          scoring_detail: r.scoring_detail || null
+        })),
         overall_summary: overallSum,
         value_creation: valueCreationRes,
         status: 'REPORT_READY'
@@ -1322,11 +1941,11 @@ ${fileContext}
                      clauses={clauses} 
                      metricFiles={metricFiles}
                      onUpload={async (cid, files) => {
-                      const processedFiles = [];
-                      for (const file of files) {
-                        const text = await quickExtract(file);
-                        processedFiles.push({ name: file.name, text });
-                      }
+                      const processedFiles = files.map((file) => ({
+                        name: file.name,
+                        text: "",
+                        rawFile: file
+                      }));
                       setMetricFiles(prev => ({
                         ...prev,
                         [cid]: [...(prev[cid] || []), ...processedFiles]
@@ -1385,7 +2004,8 @@ ${fileContext}
                     competencyAnalysis={competencyAnalysis}
                     valueCreation={valueCreation}
                     onReset={handleReset} 
-                    taskId={currentTaskId} 
+                    taskId={currentTaskId}
+                    assessmentPeriod={assessmentPeriod}
                   />
                 </motion.div>
               )}
@@ -2128,7 +2748,8 @@ function ReportView({
   competencyAnalysis,
   valueCreation,
   onReset,
-  taskId
+  taskId,
+  assessmentPeriod
 }: { 
   overallSummary: any, 
   categoryStats: any[], 
@@ -2140,9 +2761,11 @@ function ReportView({
   competencyAnalysis: any,
   valueCreation: any,
   onReset: () => void,
-  taskId: string | null
+  taskId: string | null,
+  assessmentPeriod?: { start?: string; end?: string }
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const radarPeriodLabel = getEvaluationPeriodLabel(assessmentPeriod);
 
   // Group by Category for the Details tab
   const groupedByCat = results.reduce((acc: any, curr: any) => {
@@ -2375,28 +2998,40 @@ function ReportView({
                    <div className="size-64 mb-6">
                     <ResponsiveContainer width="100%" height="100%">
                       <RadarChart cx="50%" cy="50%" outerRadius="70%" data={competencyAnalysis?.radar_data || []}>
-                        <PolarGrid stroke="#e2e8f0" />
+                        <PolarGrid stroke="#e5e7eb" />
                         <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
+                        <PolarRadiusAxis domain={[0, 8]} tick={false} axisLine={false} />
                         <Radar
-                          name="人才表现"
+                          name={radarPeriodLabel}
                           dataKey="score"
-                          stroke="#4f46e5"
-                          fill="#4f46e5"
-                          fillOpacity={0.6}
+                          stroke="#2563eb"
+                          strokeWidth={2.5}
+                          fill="transparent"
+                          fillOpacity={0}
+                          dot={false}
                         />
                         <Radar
-                          name="基准管"
+                          name="基准线"
                           dataKey="baseline"
-                          stroke="#94a3b8"
+                          stroke="#f97316"
+                          strokeWidth={2.5}
                           fill="transparent"
-                          strokeDasharray="4 4"
+                          fillOpacity={0}
+                          dot={false}
+                        />
+                        <Legend
+                          iconType="plainline"
+                          align="right"
+                          verticalAlign="middle"
+                          layout="vertical"
+                          wrapperStyle={{ fontSize: 12, fontWeight: 800, right: -20 }}
                         />
                       </RadarChart>
                     </ResponsiveContainer>
                   </div>
                   <div className="text-center">
-                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">能力匹配大盘</span>
-                    <span className="text-6xl font-black text-indigo-600 tabular-nums">{competencyAnalysis?.fit_score || 0}%</span>
+                    <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] block mb-2">综合评分</span>
+                    <span className="text-6xl font-black text-indigo-600 tabular-nums">{Number(competencyAnalysis?.fit_score || 0).toFixed(1)}分</span>
                   </div>
                 </div>
                 <div className="lg:col-span-7 flex flex-col justify-center space-y-6">
@@ -2435,8 +3070,8 @@ function ReportView({
                       </div>
                       <div className="flex items-end flex-col">
                         <div className="flex items-baseline gap-2">
-                          <span className="text-4xl font-black text-indigo-600">{dim.score}</span>
-                          <span className="text-sm text-slate-400">/ 基准 {dim.baseline || 80}</span>
+                          <span className="text-4xl font-black text-indigo-600">{Number(dim.score || 0).toFixed(1)}</span>
+                          <span className="text-sm text-slate-400">/ 基准 {dim.baseline || 5}</span>
                         </div>
                         <span className="text-[10px] font-bold text-slate-400 uppercase">Dimension Performance</span>
                       </div>
@@ -2639,21 +3274,39 @@ function ReportView({
                     <div className="size-48 mb-4 relative">
                       <ResponsiveContainer width="100%" height="100%">
                         <RadarChart cx="50%" cy="50%" outerRadius="60%" data={competencyAnalysis?.radar_data || []}>
-                          <PolarGrid stroke="#e2e8f0" />
+                          <PolarGrid stroke="#e5e7eb" />
                           <PolarAngleAxis dataKey="subject" tick={<PolarTick />} />
+                          <PolarRadiusAxis domain={[0, 8]} tick={false} axisLine={false} />
                           <Radar
-                            name="表现"
+                            name={radarPeriodLabel}
                             dataKey="score"
-                            stroke="#4f46e5"
-                            fill="#4f46e5"
-                            fillOpacity={0.5}
+                            stroke="#2563eb"
+                            strokeWidth={2.25}
+                            fill="transparent"
+                            fillOpacity={0}
+                            dot={false}
+                          />
+                          <Radar
+                            name="基准线"
+                            dataKey="baseline"
+                            stroke="#f97316"
+                            strokeWidth={2.25}
+                            fill="transparent"
+                            fillOpacity={0}
+                            dot={false}
+                          />
+                          <Legend
+                            iconType="plainline"
+                            align="center"
+                            verticalAlign="bottom"
+                            wrapperStyle={{ fontSize: 10, fontWeight: 800 }}
                           />
                         </RadarChart>
                       </ResponsiveContainer>
                     </div>
                     <div className="text-center">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">胜任力匹配度</span>
-                      <span className="text-3xl font-black text-indigo-600">{competencyAnalysis?.fit_score || 0}%</span>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">综合评分</span>
+                      <span className="text-3xl font-black text-indigo-600">{Number(competencyAnalysis?.fit_score || 0).toFixed(1)}分</span>
                     </div>
                   </div>
 

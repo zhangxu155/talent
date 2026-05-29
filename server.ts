@@ -69,6 +69,7 @@ interface EvaluationTask {
   overall_summary?: any;
   category_stats?: any[];
   competency_analysis?: any;
+  debug_scoring_details?: any[];
   created_at?: string;
 }
 
@@ -968,6 +969,7 @@ async function startServer() {
       category_stats,
       competency_analysis,
       debug_capability_dims,
+      debug_scoring_details,
       status, 
       is_append = true 
     } = req.body;
@@ -975,6 +977,10 @@ async function startServer() {
     console.log(`Syncing Task ${req.params.task_id}: is_append=${is_append}, evidences=${evidences?.length}, results=${results?.length}, status=${status}`);
     if (debug_capability_dims) {
       console.log(`[CAPABILITY][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
+    if (debug_scoring_details) {
+      task.debug_scoring_details = debug_scoring_details;
+      console.log(`[SCORING][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_scoring_details, null, 2));
     }
 
     if (!task.evidences) task.evidences = [];
@@ -1055,7 +1061,7 @@ async function startServer() {
       evaluation_period, assessment_period,
       clauses, results, evidences, 
       category_stats, competency_analysis,
-      debug_capability_dims,
+      debug_capability_dims, debug_scoring_details,
       overall_summary, value_creation,
       status 
     } = req.body;
@@ -1084,6 +1090,10 @@ async function startServer() {
     if (status) task.status = status;
     if (debug_capability_dims) {
       console.log(`[CAPABILITY][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
+    if (debug_scoring_details) {
+      task.debug_scoring_details = debug_scoring_details;
+      console.log(`[SCORING][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_scoring_details, null, 2));
     }
 
     console.log(`Upserted Task ${task_id}: status=${task.status}, clauses=${task.clauses?.length}`);
@@ -1121,7 +1131,8 @@ async function startServer() {
         value_creation: task?.value_creation || null,
         overall_summary: task?.overall_summary || null,
         category_stats: task?.category_stats || [],
-        competency_analysis: task?.competency_analysis || null
+        competency_analysis: task?.competency_analysis || null,
+        debug_scoring_details: task?.debug_scoring_details || []
       } 
     });
   });

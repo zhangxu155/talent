@@ -65,6 +65,143 @@ function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+function clampScore(value: number, min = 0, max = 120): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function parseScoreNumber(value: any): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw = String(value).trim();
+  if (!raw || /无|未知|不适用|N\/?A/i.test(raw)) return null;
+  const match = raw.replace(/，/g, "").match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+  const num = Number(match[0]);
+  if (!Number.isFinite(num)) return null;
+  if (/%/.test(raw) && num <= 1) return num * 100;
+  return num;
+}
+
+function pickFirstNumber(...values: any[]): number | null {
+  for (const value of values) {
+    const parsed = parseScoreNumber(value);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function normalizeRuleType(value: any): string {
+  const raw = String(value || "").toLowerCase();
+  if (/里程碑|milestone/.test(raw)) return "milestone";
+  if (/百分比|percentage|percent|%/.test(raw)) return "percentage";
+  if (/个数|数量|次数|篇数|count/.test(raw)) return "count";
+  if (/负向|negative|逆向|越低/.test(raw)) return "numeric_negative";
+  if (/数字|数值|正向|numeric|positive|越高/.test(raw)) return "numeric_positive";
+  return "";
+}
+
+function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[]) {
+  const fields = parsedAudit?.scoring_fields || parsedAudit?.scoring_detail || {};
+  const ruleType = normalizeRuleType(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type);
+  const target = pickFirstNumber(fields.target_value, fields.target, parsedAudit?.target_value);
+  const actual = pickFirstNumber(fields.actual_value, fields.actual, parsedAudit?.actual_value);
+  const baseline = pickFirstNumber(fields.baseline_value, fields.baseline, parsedAudit?.baseline_value);
+  const earlyDays = pickFirstNumber(fields.early_days, fields.advance_days, fields.ahead_days, parsedAudit?.early_days) || 0;
+  const delayedDays = pickFirstNumber(fields.delayed_days, fields.delay_days, fields.late_days, parsedAudit?.delayed_days) || 0;
+  const hasChallenge = Boolean(fields.has_challenge ?? parsedAudit?.has_challenge);
+  const challengeMet = Boolean(fields.challenge_met ?? parsedAudit?.challenge_met);
+  const detailBase = {
+    source: "ai_fallback",
+    rule_type: ruleType || "ai_fallback",
+    target_value: target,
+    actual_value: actual,
+    baseline_value: baseline,
+    early_days: earlyDays,
+    delayed_days: delayedDays,
+    has_challenge: hasChallenge,
+    challenge_met: challengeMet,
+    ai_score: clampScore(Number(parsedAudit?.score) || 0),
+    formula: "字段不完整或规则类型不明确，沿用AI赋分",
+    evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean)
+  };
+
+  let rawScore: number | null = null;
+  let formula = "";
+
+  if (ruleType === "numeric_positive" && target !== null && actual !== null && target !== 0) {
+    rawScore = (actual / target) * 100;
+    formula = "正向数字类：实际值/目标值*100，最高120";
+  } else if (ruleType === "numeric_negative" && target !== null && actual !== null && target !== 0) {
+    rawScore = (2 - actual / target) * 100;
+    formula = "负向数字类：(2-实际值/目标值)*100";
+  } else if (ruleType === "count" && target !== null && actual !== null) {
+    rawScore = 100 + (actual - target) * 2;
+    formula = "个数类：100+(实际值-目标值)*2";
+  } else if (ruleType === "percentage" && target !== null && actual !== null && target !== 0) {
+    if (target === 100 && actual === 100 && (earlyDays > 0 || delayedDays > 0 || fields.use_milestone_rule)) {
+      return calculateMilestoneRuleScore({ ...detailBase, rule_type: "milestone" }, earlyDays, delayedDays, hasChallenge, challengeMet);
+    }
+    if (actual >= target && target < 100) {
+      rawScore = 100 + ((actual - target) / Math.max(1, 100 - target)) * 20;
+      formula = "百分比类达标超额：100+(实际值-目标值)/(100%-目标值)*20";
+    } else {
+      rawScore = (actual / target) * 100;
+      formula = baseline !== null ? "百分比类未达目标但达到/参考基准：实际值/目标值*100" : "百分比类未达目标：实际值/目标值*100";
+    }
+  } else if (ruleType === "milestone") {
+    return calculateMilestoneRuleScore(detailBase, earlyDays, delayedDays, hasChallenge, challengeMet);
+  }
+
+  if (rawScore === null) return detailBase;
+  const finalScore = clampScore(rawScore);
+  return {
+    ...detailBase,
+    source: "rule_engine",
+    formula,
+    raw_score: Number(rawScore.toFixed(2)),
+    final_score: finalScore
+  };
+}
+
+function calculateMilestoneRuleScore(detailBase: any, earlyDays: number, delayedDays: number, hasChallenge: boolean, challengeMet: boolean) {
+  let rawScore = 100;
+  let formula = "里程碑类：按期完成必达指标=100";
+  let min = 0;
+  let max = 120;
+
+  if (hasChallenge && challengeMet) {
+    if (earlyDays > 0) {
+      rawScore = 110 + (earlyDays / 30) * 10;
+      formula = "挑战指标达成且提前：110+(提前天数/30)*10，上限120";
+    } else if (delayedDays > 0) {
+      rawScore = 110 - (delayedDays / 30) * 10;
+      formula = "挑战指标达成但拖期：110-(拖期天数/30)*10，下限90";
+      min = 90;
+    } else {
+      rawScore = 110;
+      formula = "挑战指标达成且按期：110";
+    }
+  } else if (earlyDays > 0) {
+    rawScore = 100 + (earlyDays / 60) * 20;
+    formula = "无挑战或挑战未达成，必达指标提前：100+(提前天数/60)*20，上限120";
+  } else if (delayedDays > 0) {
+    rawScore = 100 - (delayedDays / 30) * 10;
+    formula = "无挑战或挑战未达成，必达指标拖期：100-(拖期天数/30)*10，下限80";
+    min = 80;
+  }
+
+  const finalScore = clampScore(rawScore, min, max);
+  return {
+    ...detailBase,
+    source: "rule_engine",
+    rule_type: "milestone",
+    formula,
+    raw_score: Number(rawScore.toFixed(2)),
+    final_score: finalScore
+  };
+}
+
 const PolarTick = (props: any) => {
   const { x, y, payload, textAnchor } = props;
   const value = payload.value;
@@ -1066,7 +1203,7 @@ ${fileContext}
 
 已知 hasSubstantiveNonMinutes=${hasSubstantiveNonMinutes}.
 
-输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"里程碑节点","raw_excerpt":"原文","summary":"该里程碑节点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
+输出JSON：{ "summary":"30-50字", "completion_status":"完成/未完成/部分完成", "score":0-120, "scoring_fields":{"rule_type":"numeric_positive/numeric_negative/count/percentage/milestone/ai_fallback","target_value":数字或null,"actual_value":数字或null,"baseline_value":数字或null,"has_challenge":true/false,"challenge_met":true/false,"early_days":数字,"delayed_days":数字,"use_milestone_rule":true/false,"calculation_note":"字段提取说明"}, "adopted_files":["文件名"], "rejected_files":[{"file_name":"xx","reason":"xx"}], "extracted_evidences":[{"title":"里程碑节点","raw_excerpt":"原文","summary":"该里程碑节点可由哪些交付物共同佐证（不要写成某单个文件直接证明）","confidence":0.9,"source_file_name":"文件名1, 文件名2"}] }`;
 
         let aggResp = "";
         try {
@@ -1103,6 +1240,26 @@ ${fileContext}
           }
         }
 
+        const scoringDetail = hasSubstantiveNonMinutes
+          ? calculateRuleScore(clause, parsedAudit, perFileAudits)
+          : {
+              source: "ai_fallback",
+              rule_type: "ai_fallback",
+              ai_score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
+              final_score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
+              formula: "缺少非纪要实质证据，沿用AI/证据兜底分",
+              evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean)
+            };
+        if (scoringDetail.source === "rule_engine") {
+          parsedAudit.score = scoringDetail.final_score;
+          parsedAudit.summary = `${parsedAudit.summary || "指标审计完成。"}（系统已按规则引擎复算分数）`;
+        }
+        console.log("[SCORING][DETAIL]", {
+          clause_id: clause.clause_id,
+          title: clause.title,
+          scoring_detail: scoringDetail
+        });
+
         const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];
         // 如果汇总层只返回了单文件证据，补充文件级审计证据，避免“看起来只分析了一个文件”。
         const aggregatedSourceNames = new Set(
@@ -1132,7 +1289,8 @@ ${fileContext}
         intermediateResults[clause.clause_id] = [{
           conclusion: parsedAudit.summary,
           score: Math.max(0, Math.min(120, Number(parsedAudit.score) || 0)),
-          completion_status: parsedAudit.completion_status
+          completion_status: parsedAudit.completion_status,
+          scoring_detail: scoringDetail
         }];
       }
 
@@ -1151,7 +1309,8 @@ ${fileContext}
           completion_status: audit.completion_status || "未完成",
           actual_value: audit.conclusion || "无数据",
           evidence_summary: audit.conclusion || "未发现支撑材料",
-          matched_evidence_ids: allEvidences.filter(e => e.matched_clause_id === c.clause_id).map(e => e.evidence_id)
+          matched_evidence_ids: allEvidences.filter(e => e.matched_clause_id === c.clause_id).map(e => e.evidence_id),
+          scoring_detail: audit.scoring_detail || null
         };
       });
       setResults(resList);
@@ -1372,6 +1531,12 @@ ${dimSchemaText}
           extracted_model_dims: modelDims,
           final_dim_pool: dimPool
         },
+        debug_scoring_details: resList.map((r: any) => ({
+          clause_id: r.clause_id,
+          title: r.title,
+          score: r.score,
+          scoring_detail: r.scoring_detail || null
+        })),
         overall_summary: overallSum,
         value_creation: valueCreationRes,
         status: 'REPORT_READY'

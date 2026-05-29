@@ -409,6 +409,20 @@ async function parseOfficeToText(filePath: string, options: any = {}): Promise<s
   });
 }
 
+function logPptxModelInput(prompt: string) {
+  const rawPrompt = String(prompt || "");
+  const fileMatch = rawPrompt.match(/当前交付物文件：([^\n\r]+\.(?:pptx|ppt))\b/i);
+  if (!fileMatch) return;
+
+  const fileName = fileMatch[1].trim();
+  const textMatch = rawPrompt.match(/文件文本：\s*\n([\s\S]*?)(?:\n\s*要求：|\n\s*请输出JSON：|$)/);
+  const modelInputText = textMatch ? textMatch[1].trim() : "";
+  console.log(`\n[PPTX_MODEL_INPUT][${fileName}] length=${modelInputText.length}`);
+  console.log("========== PPTX 输入给模型的解析文本 BEGIN ==========");
+  console.log(modelInputText || "[空文本]");
+  console.log("========== PPTX 输入给模型的解析文本 END ==========\n");
+}
+
 function looksLikeBinaryOrBase64Blob(text: string): boolean {
   if (!text) return false;
   const compact = text.replace(/\s+/g, "");
@@ -1214,6 +1228,7 @@ async function startServer() {
         temperature: config.temperature ?? 0.1
       };
 
+      logPptxModelInput(prompt);
       console.log(`AI Proxy: Calling ${targetUrl} with model ${body.model}`);
 
       const aiResponse = await fetch(targetUrl, {

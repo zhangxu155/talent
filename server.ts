@@ -1183,7 +1183,7 @@ async function startServer() {
       const body = {
         model: config.localModel || "default",
         messages: [{ role: 'user', content: prompt }],
-        temperature: config.temperature || 0.1
+        temperature: config.temperature ?? 0.1
       };
 
       console.log(`AI Proxy: Calling ${targetUrl} with model ${body.model}`);

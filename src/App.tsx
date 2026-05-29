@@ -93,6 +93,39 @@ function pickFirstNumber(...values: any[]): number | null {
 }
 
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function trimNumberZeros(value: string): string {
+  return value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+}
+
+function numberAppearsInAuditEvidence(value: number | null, perFileAudits: any[]): boolean {
+  if (value === null) return true;
+  const snippets = (perFileAudits || []).flatMap((audit: any) => [
+    ...(Array.isArray(audit?.scoring_facts) ? audit.scoring_facts.map((fact: any) => fact?.raw_excerpt) : []),
+    ...(Array.isArray(audit?.extracted_evidences) ? audit.extracted_evidences.map((ev: any) => ev?.raw_excerpt) : [])
+  ]).filter(Boolean);
+  const evidenceText = snippets.join("\n");
+  if (!evidenceText) return false;
+
+  const candidates = Array.from(new Set([
+    trimNumberZeros(String(value)),
+    trimNumberZeros(value.toFixed(1)),
+    trimNumberZeros(value.toFixed(2)),
+    trimNumberZeros(value.toFixed(3)),
+    value.toFixed(1),
+    value.toFixed(2),
+    value.toFixed(3)
+  ].filter(Boolean)));
+
+  return candidates.some((candidate) => {
+    const pattern = new RegExp(`(^|[^0-9.])${escapeRegExp(candidate)}([^0-9.]|$)`);
+    return pattern.test(evidenceText);
+  });
+}
+
 function parseOptionalBoolean(value: any): boolean | null {
   if (value === true || value === false) return value;
   if (value === null || value === undefined) return null;
@@ -139,7 +172,9 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
   const inferred = inferScoringFieldsFromTarget(clause?.target_description || clause?.title || "");
   const ruleType = normalizeRuleType(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type || inferred.rule_type);
   const target = pickFirstNumber(fields.target_value, fields.target, parsedAudit?.target_value, inferred.target_value);
-  const actual = pickFirstNumber(fields.actual_value, fields.actual, parsedAudit?.actual_value);
+  const rawActual = pickFirstNumber(fields.actual_value, fields.actual, parsedAudit?.actual_value);
+  const actualSupportedByEvidence = numberAppearsInAuditEvidence(rawActual, perFileAudits);
+  const actual = actualSupportedByEvidence ? rawActual : null;
   const baseline = pickFirstNumber(fields.baseline_value, fields.baseline, parsedAudit?.baseline_value);
   const rawEarlyDays = pickFirstNumber(fields.early_days, fields.advance_days, fields.ahead_days, parsedAudit?.early_days);
   const rawDelayedDays = pickFirstNumber(fields.delayed_days, fields.delay_days, fields.late_days, parsedAudit?.delayed_days);
@@ -157,6 +192,7 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
     rule_type: ruleType || "ai_fallback",
     target_value: target,
     actual_value: actual,
+    rejected_actual_value: actualSupportedByEvidence ? null : rawActual,
     baseline_value: baseline,
     early_days: earlyDays,
     delayed_days: delayedDays,
@@ -164,7 +200,7 @@ function calculateRuleScore(clause: any, parsedAudit: any, perFileAudits: any[])
     challenge_met: challengeMetParsed,
     on_time: onTimeParsed,
     ai_score: clampScore(Number(parsedAudit?.score) || 0),
-    formula: "字段不完整或规则类型不明确，沿用AI赋分",
+    formula: actualSupportedByEvidence ? "字段不完整或规则类型不明确，沿用AI赋分" : "AI返回的实际值未在文件级证据中命中，忽略该实际值并沿用AI赋分",
     evidence_files: perFileAudits.map((f: any) => f.file_name).filter(Boolean),
     inferred_from_target: Boolean(inferred.inferred_from_target && !(fields.rule_type || fields.metric_type || parsedAudit?.rule_type || parsedAudit?.metric_type))
   };
@@ -1255,6 +1291,7 @@ export default function App() {
       // 1. Individual Metric Audit
       const allEvidences: any[] = [];
       const intermediateResults: Record<string, any[]> = {}; 
+      const scoringAiConfig = { ...aiConfig, temperature: Math.min(Number(aiConfig.temperature ?? 0.1), 0.01) };
 
       for (let i = 0; i < clauses.length; i++) {
         const clause = clauses[i];
@@ -1303,6 +1340,11 @@ export default function App() {
 文件文本：
 ${fileContext}
 
+要求：
+1) 若文件原文中出现与该指标实际达成相关的数字，请原样摘录到 scoring_facts；
+2) scoring_facts.value 必须来自文件原文或 raw_excerpt，不允许估算、四舍五入或根据目标反推；
+3) 文件中没有实际达成数字时，scoring_facts 返回空数组。
+
 请输出JSON：
 {
   "file_name":"${file.name}",
@@ -1311,11 +1353,12 @@ ${fileContext}
   "completion_status": "完成/未完成/部分完成",
   "score": 0-120,
   "summary": "该文件对本指标的判断（30-40字）",
+  "scoring_facts": [{"value":数字,"unit":"单位或空","raw_excerpt":"包含该数字的原文片段","meaning":"该数字代表什么"}],
   "extracted_evidences": [{"title":"证据点","raw_excerpt":"原文","summary":"说明","confidence":0.9}]
 }`;
           let fileResp = "";
           try {
-            fileResp = await api.callAI(fileAuditPrompt, aiConfig);
+            fileResp = await api.callAI(fileAuditPrompt, scoringAiConfig);
           } catch (aiErr: any) {
             fileResp = JSON.stringify({ file_name: file.name, is_meeting_minutes: false, has_substantive_evidence: false, completion_status: "未知", score: 0, summary: `文件审计失败: ${aiErr.message}`, extracted_evidences: [] });
           }
@@ -1327,6 +1370,7 @@ ${fileContext}
             completion_status: fileAudit.completion_status || "未知",
             score: Math.max(0, Math.min(120, Number(fileAudit.score) || 0)),
             summary: fileAudit.summary || "",
+            scoring_facts: Array.isArray(fileAudit.scoring_facts) ? fileAudit.scoring_facts : [],
             extracted_evidences: Array.isArray(fileAudit.extracted_evidences) ? fileAudit.extracted_evidences : []
           };
         });
@@ -1342,7 +1386,7 @@ ${fileContext}
 2) 会议纪要“默认通过”仅在 hasSubstantiveNonMinutes=true 时可作为加分/佐证，不可单独决定完成。
 3) 若 hasSubstantiveNonMinutes=false，则最终不允许给出“完成”。
 4) scoring_fields.rule_type 必须按指标真实口径选择：绩效指标/子指标中有数字时，优先判断为数字类、个数类或百分比类；有百分号/完成率/达成率用 percentage；有“个/项/次/篇/份/套/场/类/人/件/车型/项目”等数量单位用 count；其他明确数值目标按正向/负向选择 numeric_positive/numeric_negative。
-5) 如果目标基准中有数字，但文件级结果没有抽到该指标实际达成值，actual_value 必须为 null，rule_type 可先按目标类型填写或用 ai_fallback，最终仍按现有证据规则判断，不要编造实际值。
+5) actual_value 只能来自文件级结果中的 scoring_facts.value 或 extracted_evidences.raw_excerpt 原文数字；不得根据目标值、经验或模型常识补写/四舍五入。如果文件级结果没有抽到该指标实际达成值，actual_value 必须为 null，rule_type 可先按目标类型填写或用 ai_fallback，最终仍按现有证据规则判断。
 6) 只有明确计划节点/预期完工标准/阶段交付成果，且证据能抽出计划时间与实际完成时间、提前/拖期/按期事实时，才允许用 milestone。严禁把所有指标默认归为 milestone。
 7) milestone 必须尽量给出 early_days 或 delayed_days；确认为按期但无提前/拖期时，early_days=0、delayed_days=0、on_time=true；无法判断时间差时 rule_type 用 ai_fallback。
 
@@ -1352,7 +1396,7 @@ ${fileContext}
 
         let aggResp = "";
         try {
-          aggResp = await api.callAI(aggregatePrompt, aiConfig);
+          aggResp = await api.callAI(aggregatePrompt, scoringAiConfig);
         } catch (aiErr: any) {
           aggResp = JSON.stringify({ summary: `汇总审计失败: ${aiErr.message}`, completion_status: "未知", score: 0, adopted_files: [], rejected_files: [], extracted_evidences: [] });
         }

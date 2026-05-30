@@ -934,6 +934,30 @@ function strengthDimsSafe(dims: string[]) {
   return dims.length > 0 ? dims : ["岗位核心交付能力"];
 }
 
+function buildEvaluationConclusionText(overallSummary: any, competencyAnalysis: any, results: any[], knowledge: any) {
+  const topResults = Array.from(new Set((results || [])
+    .filter((r: any) => Number(r?.score) >= 80)
+    .map((r: any) => String(r?.title || "").trim())
+    .filter(Boolean)
+  ));
+  const performanceText = topResults.length > 0
+    ? topResults.slice(0, 2).join("、")
+    : (overallSummary?.core_strengths || "关键任务交付");
+  const hasKnowledge = Boolean(knowledge?.hasData);
+  const knowledgeText = hasKnowledge ? "并有有效的知识沉淀" : "并形成一定过程沉淀";
+  const strongDims = Array.isArray(competencyAnalysis?.radar_data)
+    ? competencyAnalysis.radar_data
+      .filter((d: any) => Number(d?.score) > Number(competencyAnalysis?.fit_score || 0))
+      .map((d: any) => String(d?.subject || "").trim())
+      .filter(Boolean)
+    : [];
+  const keyAbility = (strongDims.length > 0 ? strongDims.slice(0, 3).join("、") : "岗位核心") + "关键能力突出";
+  const fitScore = Number(competencyAnalysis?.fit_score || 0);
+  const fitText = fitScore >= 7 ? "岗位匹配度较高" : fitScore >= 5 ? "岗位匹配度较好" : "岗位匹配度仍需提升";
+  const suggestion = fitScore >= 5 ? "建议持续留用并承担关键任务" : "建议观察留用并加强针对性辅导";
+  return `经评价，人才在${performanceText}方面业绩贡献突出，${knowledgeText}，能力与岗位需求整体符合，且${keyAbility}，${fitText}，${suggestion}。`;
+}
+
 function normalizeRadarData(data: any, requiredDims: string[]) {
   const arr = Array.isArray(data) ? data : [];
   const bySubject = new Map<string, any>();
@@ -1809,6 +1833,7 @@ ${dimSchemaText}
       3. 综合评价（general_eval）：请务必整合“任务指标达成”与“团队培养/能力沉淀”两个维度。如果没有明确的团队培养数据，请基于其岗位级别（领军人才）给出合理的专业建议。
       4. 价值创造部分（value_creation_details）：请务必一一对照审计证据库。如果在“产品项目”、“经营收益”、“技术创新”、“行业影响”四个维度中，某一项【缺乏具体交付物数据证据】支撑，则该项务必返回 null。严禁使用通用套话。
       5. 产品项目定义：只要审计数据中涉及 P 或 E 开头的项目号（如 P717、E900），均归为“产品项目”。product_projects 请使用固定话术：“主导完成XX等XX个车型项目，并在项目推进、方案交付与跨部门协同中表现较好”。
+      6. evaluation_conclusion 不体现人在什么梯队，也不要写“需要培养什么能力”；请从业绩成果、能力强项、能力适配等方面形成综合结论，参考格式：“经评价，人才在XX方面业绩贡献突出，并有有效的知识沉淀，能力与岗位需求整体符合，且XX关键能力突出，岗位匹配度较高，建议XX或者留用不留用”。
       
       请严格按照以下 JSON 格式输出：
       {
@@ -1818,7 +1843,7 @@ ${dimSchemaText}
          "core_strengths": "参考模版，列举2-3个核心优势点（必须严格引用指标标题池中的名称）",
          "improvements": "参考模版，列举2-3个待改进及建议点（必须严格引用指标标题池中的名称）",
          "performance_grade": "${compAnalysis.potential_level}",
-         "evaluation_conclusion": "最终的人才保留或培养建议",
+         "evaluation_conclusion": "按指定格式输出综合评价结论，不体现梯队或培养能力",
          "value_creation_details": {
             "score": ${valueCreationRes.score},
             "main_desc": "在关键业务职责外的增量价值汇总描述",
@@ -3018,11 +3043,29 @@ function ReportView({
     const flowText = flows.length > 0 ? `完成${flows[0]}等${flows.length}项流程机制` : null;
     const toolText = tools.length > 0 ? `完成${tools[0]}等${tools.length}项工具方法` : null;
     const heritageText = heritages.length > 0 ? `完成${heritages[0]}等${heritages.length}项能力传承` : null;
+    const sourceText = [
+      ...((clauses || []).flatMap((c: any) => [c.title, c.target_description, ...(c.milestones || []).map((m: any) => m.content)])),
+      ...((results || []).flatMap((r: any) => [r.title, r.actual_value, r.evidence_summary])),
+      ...((evidences || []).flatMap((e: any) => [e.title, e.summary, e.raw_excerpt]))
+    ].filter(Boolean).join(" ");
+    const teamCount = sourceText.match(/(?:培养|带教|辅导|团队成员)[^0-9一二三四五六七八九十]{0,20}(\d+)\s*人/)?.[1];
+    const trainingTopics = [...tools, ...flows].slice(0, 2).join("、") || "专业方法";
+    const capabilityTopics = Array.isArray(competencyAnalysis?.radar_data)
+      ? competencyAnalysis.radar_data
+        .slice()
+        .sort((a: any, b: any) => Number(b?.score || 0) - Number(a?.score || 0))
+        .map((d: any) => String(d?.subject || "").trim())
+        .filter(Boolean)
+        .slice(0, 2)
+        .join("、")
+      : "岗位核心";
+    const summaryText = `培养团队成员${teamCount ? `${teamCount}人` : ""}，开展${trainingTopics}等专业培训，提升团队成员${capabilityTopics || "岗位核心"}等能力，能力有效沉淀。`;
 
     return {
       flowText,
       toolText,
       heritageText,
+      summaryText,
       flows,
       tools,
       heritages,
@@ -3534,6 +3577,11 @@ function ReportView({
                       </div>
                     </div>
                   </div>
+                  {knowledge.summaryText && (
+                    <div className="bg-indigo-50/40 border border-indigo-100 rounded-2xl p-5">
+                      <p className="text-sm text-slate-700 font-bold leading-relaxed">{knowledge.summaryText}</p>
+                    </div>
+                  )}
                   
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                     {/* 流程机制 */}
@@ -3628,7 +3676,7 @@ function ReportView({
               </div>
               <div className="col-span-12 lg:col-span-10 bg-white p-10 rounded-[3rem] border border-slate-200 shadow-xl flex items-center">
                  <p className="text-sm text-slate-700 font-bold leading-relaxed px-2">
-                   {overallSummary?.evaluation_conclusion || "经综合评价，该人才在评估期内业绩表现优异，专业能力与岗位需求高度匹配，建议在未来周期内承担更具挑战性的职责。"}
+                   {buildEvaluationConclusionText(overallSummary, competencyAnalysis, results, knowledge)}
                  </p>
               </div>
             </div>

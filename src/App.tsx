@@ -1409,12 +1409,6 @@ export default function App() {
         throw new Error("未能从合同中解析出有效指标。");
       }
       const clausesList = normalizeContractClauses(rawClausesList);
-      console.log("[CATEGORY][NORMALIZED]", clausesList.map((c: any) => ({
-        title: c.title,
-        raw_category: c.raw_category,
-        business_category: c.business_category,
-        category: c.category
-      })));
 
       setClauses(clausesList);
       
@@ -1602,11 +1596,6 @@ ${fileContext}
           parsedAudit.score = scoringDetail.final_score;
           parsedAudit.summary = `${parsedAudit.summary || "指标审计完成。"}（系统已按规则引擎复算分数）`;
         }
-        console.log("[SCORING][DETAIL]", {
-          clause_id: clause.clause_id,
-          title: clause.title,
-          scoring_detail: scoringDetail
-        });
 
         const evidenceList = Array.isArray(parsedAudit.extracted_evidences) ? parsedAudit.extracted_evidences : [];
         // 如果汇总层只返回了单文件证据，补充文件级审计证据，避免“看起来只分析了一个文件”。
@@ -1683,7 +1672,6 @@ ${fileContext}
       setCategoryStats(stats);
 
       const totalScoreValue = resList.reduce((acc, r) => acc + r.score * (r.weight / 100), 0);
-      console.log(`Total Score calculated: ${totalScoreValue}`);
 
       const miniEvidences = allEvidences.map(ev => ({ id: ev.evidence_id, title: ev.title, summary: ev.summary }));
       const valuePrompt = `你是一个资深人才价值评估专家。请基于以下【交付物审计证据】，评估该名【数字化人才】在【合同职责之外】创造的增量价值。
@@ -1698,7 +1686,6 @@ ${fileContext}
         "details": { "亮点1": "具体贡献说明（30-40字）", "亮点2": "具体贡献说明（30-40字）" }
       }`;
       
-      console.log("Starting Value Creation evaluation...");
       let valueCreationRes = { score: 0, summary: "评估完成", details: {} as any };
       try {
         const valResp = await api.callAI(valuePrompt, aiConfig);
@@ -1720,11 +1707,6 @@ ${fileContext}
       const modelDims = extractCapabilityItemsFromText(capabilityText)
         .filter((d) => !coreRadarDims.includes(d));
       const dimPool = [...coreRadarDims, ...modelDims];
-      console.log("[CAPABILITY][DIM_EXTRACT]", {
-        capability_text_preview: capabilityText.substring(0, 400),
-        extracted_model_dims: modelDims,
-        final_dim_pool: dimPool
-      });
       const dimRulesText = modelDims.length > 0
         ? `除四个核心维度外，必须额外包含以下能力模型维度（逐项一一输出，不得遗漏、不得改名）：
 ${modelDims.map((d, i) => `${i + 1}. ${d}`).join("\n")}`
@@ -1767,7 +1749,6 @@ ${dimSchemaText}
         "recommendation": "培养建议"
       }`;
       
-      console.log("Starting Competency Analysis...");
       let compAnalysis = { 
         fit_score: 0, 
         fit_eval: "数据计算中...", 
@@ -1853,7 +1834,6 @@ ${dimSchemaText}
          }
       }`;
       
-      console.log("Starting Overall Summary generation...");
       let overallSum: any = { 
         core_conclusion: "评估已完成", 
         general_eval: "审计引擎已完成对交付物的深度扫描。", 
@@ -1881,9 +1861,7 @@ ${dimSchemaText}
       }
       overallSum = { ...overallSum, overall_score: finalOverallScore };
       setOverallSummary(overallSum);
-      console.log("Overall Summary done.");
 
-      console.log("Syncing final task data to server...");
       await api.upsertTask(taskId, {
         results: resList,
         evidences: allEvidences,

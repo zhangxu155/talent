@@ -737,6 +737,70 @@ function pickCapabilityModelTextOnly(jdCombinedText: string): string {
 
 
 
+const METRIC_CATEGORY_LABELS: Record<string, string> = {
+  "产品开发": "车型/项目量产落地贡献",
+  "平台开发": "战略匹配与前瞻研发",
+  "技术研发": "核心技术攻坚与突破",
+  "体系建设": "创新成果与知识产权",
+  "人才培养": "团队赋能与人才培养",
+  "行业影响": "行业影响"
+};
+
+function normalizeMetricCategory(rawCategory: any, title: any = "", targetDescription: any = "") {
+  const raw = String(rawCategory || "").trim();
+  const text = [raw, title, targetDescription].map((v) => String(v || "")).join(" ");
+  const normalizedKey = Object.keys(METRIC_CATEGORY_LABELS).find((key) => text.includes(key));
+  if (normalizedKey) {
+    return {
+      category: METRIC_CATEGORY_LABELS[normalizedKey],
+      business_category: normalizedKey,
+      raw_category: raw
+    };
+  }
+
+  if (/行业|影响力|标准外部|外部评审|协会|白皮书|生态/.test(text)) {
+    return { category: METRIC_CATEGORY_LABELS["行业影响"], business_category: "行业影响", raw_category: raw };
+  }
+  if (/人才|团队|培养|带教|培训|传承|梯队/.test(text)) {
+    return { category: METRIC_CATEGORY_LABELS["人才培养"], business_category: "人才培养", raw_category: raw };
+  }
+  if (/体系|标准|规范|流程|方法体系|知识产权|专利|论文|制度/.test(text)) {
+    return { category: METRIC_CATEGORY_LABELS["体系建设"], business_category: "体系建设", raw_category: raw };
+  }
+  if (/技术研发|技术|研发|攻关|突破|工具链|仿真|模拟器|算法|模型|软件|平台技术/.test(text)) {
+    return { category: METRIC_CATEGORY_LABELS["技术研发"], business_category: "技术研发", raw_category: raw };
+  }
+  if (/平台开发|平台|前瞻|规划|架构/.test(text)) {
+    return { category: METRIC_CATEGORY_LABELS["平台开发"], business_category: "平台开发", raw_category: raw };
+  }
+  if (/产品|项目开发|车型|量产|SOP|OTS|P\d+|E\d+/.test(text)) {
+    return { category: METRIC_CATEGORY_LABELS["产品开发"], business_category: "产品开发", raw_category: raw };
+  }
+
+  return {
+    category: raw && !/^(核心指标|基础指标|观察项)$/.test(raw) ? raw : "其他",
+    business_category: "其他",
+    raw_category: raw
+  };
+}
+
+function normalizeContractClauses(rawClauses: any[]) {
+  return rawClauses.map((clause, index) => {
+    const mapped = normalizeMetricCategory(
+      clause?.business_category || clause?.category,
+      clause?.title,
+      clause?.target_description
+    );
+    return {
+      ...clause,
+      clause_id: clause?.clause_id || `c${index + 1}`,
+      raw_category: clause?.raw_category || mapped.raw_category,
+      business_category: clause?.business_category || mapped.business_category,
+      category: mapped.category
+    };
+  });
+}
+
 function extractVehicleProjectCodes(items: any[]): string[] {
   const text = items
     .map((item) => [item?.title, item?.benchmark, item?.evidence, item?.target_benchmark, item?.actual_value, item?.evidence_summary].filter(Boolean).join(" "))
@@ -1304,16 +1368,30 @@ export default function App() {
 
       // 1. Parse Contract
       const contractPrompt = `你是一个专业的 HR 绩效考评解析专家。
-      任务：深度扫描下述【绩效合同】全文，识别每一个“考核指标/重点工作”，并提炼其目标内容、指标类别、目标描述（验收标准）。
+      任务：深度扫描下述【绩效合同】全文，识别每一个“考核指标/重点工作”，并提炼其目标内容、二级业务分类、目标描述（验收标准）。
       
       【严格强制要求】：
+      - 合同表格中“指标类别”通常有两层：第一层可能是“核心指标/基础指标/观察项”，第二层才是业务分类（如：产品开发、平台开发、技术研发、体系建设、人才培养、行业影响）。
+      - "category" 必须提取第二层业务分类，不要填写“核心指标/基础指标/观察项”。
+      - "business_category" 同样填写第二层业务分类，允许值优先为：产品开发、平台开发、技术研发、体系建设、人才培养、行业影响。
+      - "raw_category" 可记录第一层分类（核心指标/基础指标/观察项），但不能用于报告分类别达成度。
       - "target_description" 字段绝对禁止写“见合同”等模糊字眼。必须提炼具体的考核基准内容。
       - 如果合同中提到了关键时间节点/里程碑（如：Q1完成XX，10月完成公开课等），请将其提取到 "milestones" 数组中。
+      
+      【业务分类映射说明】：
+      - 产品开发 -> 车型/项目量产落地贡献
+      - 平台开发 -> 战略匹配与前瞻研发
+      - 技术研发 -> 核心技术攻坚与突破
+      - 体系建设 -> 创新成果与知识产权
+      - 人才培养 -> 团队赋能与人才培养
+      - 行业影响 -> 行业影响
       
       请直接返回 JSON 数组：
       [{ 
         "clause_id": "c1", 
-        "category": "指标类别", 
+        "raw_category": "核心指标/基础指标/观察项",
+        "business_category": "产品开发/平台开发/技术研发/体系建设/人才培养/行业影响",
+        "category": "产品开发/平台开发/技术研发/体系建设/人才培养/行业影响", 
         "title": "指标原文名称", 
         "target_description": "具体的考核基准描述",
         "weight": 20,
@@ -1325,11 +1403,18 @@ export default function App() {
       ${finalContractText.substring(0, 20000)}`;
       
       const clausesRaw = await api.callAI(contractPrompt, aiConfig);
-      const clausesList = extractJSON(clausesRaw);
+      const rawClausesList = extractJSON(clausesRaw);
       
-      if (!Array.isArray(clausesList) || clausesList.length === 0) {
+      if (!Array.isArray(rawClausesList) || rawClausesList.length === 0) {
         throw new Error("未能从合同中解析出有效指标。");
       }
+      const clausesList = normalizeContractClauses(rawClausesList);
+      console.log("[CATEGORY][NORMALIZED]", clausesList.map((c: any) => ({
+        title: c.title,
+        raw_category: c.raw_category,
+        business_category: c.business_category,
+        category: c.category
+      })));
 
       setClauses(clausesList);
       
@@ -1564,10 +1649,13 @@ ${fileContext}
         const audit = intermediateResults[c.clause_id]?.[0] || {};
         const auditConclusion = audit.conclusion || "无数据";
         const actualValue = buildTargetBasedActualValue(c, auditConclusion);
+        const mappedCategory = normalizeMetricCategory(c.business_category || c.category, c.title, c.target_description);
         return {
           clause_id: c.clause_id,
           title: c.title,
-          category: c.category,
+          category: mappedCategory.category,
+          raw_category: c.raw_category || mappedCategory.raw_category,
+          business_category: c.business_category || mappedCategory.business_category,
           weight: c.weight,
           score: Math.max(0, Math.min(120, Number(audit.score) || 0)),
           target_benchmark: c.target_description || "-",
@@ -1590,7 +1678,7 @@ ${fileContext}
         category: cat,
         completion_rate: categoryWeights[cat] > 0 ? Math.round((categoryScores[cat] / categoryWeights[cat]) * 100) : 0,
         score: Math.round(categoryScores[cat]),
-        description: clauses.filter(c => c.category === cat).map(c => c.title).join('；')
+        description: resList.filter(r => r.category === cat).map(r => r.title).join('；')
       }));
       setCategoryStats(stats);
 

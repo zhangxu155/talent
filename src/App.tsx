@@ -819,6 +819,57 @@ function normalizeCompetencyFitScore(value: any, radarData: any[] = []): number 
   return Math.max(0, Math.min(8, Number(avg.toFixed(1))));
 }
 
+function buildCompetencyNarrative(compAnalysis: any, results: any[]) {
+  const radarData = Array.isArray(compAnalysis?.radar_data) ? compAnalysis.radar_data : [];
+  const fitScore = Number(compAnalysis?.fit_score) || 0;
+  const strongDims = radarData
+    .filter((d: any) => Number(d?.score) > fitScore)
+    .map((d: any) => String(d.subject || "").trim())
+    .filter(Boolean);
+  const weakDims = radarData
+    .filter((d: any) => Number(d?.score) < fitScore)
+    .map((d: any) => String(d.subject || "").trim())
+    .filter(Boolean);
+  const leadTasks = Array.from(new Set((results || [])
+    .filter((r: any) => Number(r?.score) >= 80)
+    .map((r: any) => String(r?.title || "").trim())
+    .filter(Boolean)
+  )).slice(0, 2).join("、") || "关键任务";
+  const fitLevel = fitScore >= 7 ? "高" : fitScore >= 6 ? "好" : fitScore >= 5 ? "一般" : "弱";
+  const strengthDimText = strongDims.length > 0 ? strongDims.join("、") : "岗位核心交付";
+  const weaknessDimText = weakDims.length > 0 ? weakDims.join("、") : "暂无明显低于综合评分的能力项";
+  const fitEval = [
+    `岗位匹配度：经评估，人才能力与当前岗位匹配度较${fitLevel}。`,
+    `能力强项：经评估，人才主导${leadTasks}，在${strengthDimText}等方面能力较为突出。`,
+    weakDims.length > 0
+      ? `能力弱项：经评估，人才主导${leadTasks}，但在${weaknessDimText}方面仍有待提升。`
+      : "能力弱项：经评估，暂未发现低于综合评分的明显能力短板，建议持续保持高质量交付。"
+  ].join("\n\n");
+  const recommendation = weakDims.length > 0
+    ? `加强${weakDims[0]}方面工作任务承接/${weakDims[1] || weakDims[0]}方面对标学习/${weakDims[0]}方面实践应用/${weakDims[weakDims.length - 1]}方面研究复盘，提升${weaknessDimText}能力。`
+    : "持续承接高挑战任务，加强跨项目复盘与方法沉淀，巩固优势能力。";
+
+  return {
+    ...compAnalysis,
+    fit_eval: fitEval,
+    strengths: [
+      `能力强项：${strengthDimsSafe(strongDims).join("、")}。`,
+      `经评估，人才主导${leadTasks}，在${strengthDimText}等方面能力较为突出。`
+    ],
+    weaknesses: weakDims.length > 0
+      ? [
+          `能力弱项：${weaknessDimText}。`,
+          recommendation
+        ]
+      : ["暂未发现低于综合评分的明显能力弱项。"],
+    recommendation
+  };
+}
+
+function strengthDimsSafe(dims: string[]) {
+  return dims.length > 0 ? dims : ["岗位核心交付能力"];
+}
+
 function normalizeRadarData(data: any, requiredDims: string[]) {
   const arr = Array.isArray(data) ? data : [];
   const bySubject = new Map<string, any>();
@@ -1569,6 +1620,7 @@ ${fileContext}
           valueCreationRes.score = (valueCreationRes as any).total_score;
         }
       } catch (e) { console.error("Value Creation AI failed:", e); }
+      const finalOverallScore = Number((totalScoreValue + (Number(valueCreationRes.score) || 0)).toFixed(1));
       setValueCreation(valueCreationRes);
 
       const coreRadarDims = [
@@ -1649,9 +1701,8 @@ ${dimSchemaText}
       } catch (e) { console.error("Competency Analysis AI failed:", e); }
       compAnalysis.radar_data = normalizeRadarData(compAnalysis.radar_data, dimPool);
       compAnalysis.fit_score = normalizeCompetencyFitScore(compAnalysis.fit_score, compAnalysis.radar_data);
-      compAnalysis.fit_eval = String(compAnalysis.fit_eval || "基于岗位要求与交付证据，已完成能力匹配评估。");
       compAnalysis.potential_level = String(compAnalysis.potential_level || "B");
-      compAnalysis.recommendation = String(compAnalysis.recommendation || "建议围绕关键维度持续补强证据闭环。");
+      compAnalysis = buildCompetencyNarrative(compAnalysis, resList);
       setCompetencyAnalysis(compAnalysis);
 
       const auditContext = resList.map(r => ({
@@ -1678,6 +1729,7 @@ ${dimSchemaText}
       数据参考：
       - 指标达成总分: ${totalScoreValue.toFixed(1)}
       - 额外价值创造得分: ${valueCreationRes.score}
+      - 综合评分（必须等于指标达成总分+价值创造得分）: ${finalOverallScore}
       - 岗位综合评分: ${compAnalysis.fit_score}
       - 潜力评级: ${compAnalysis.potential_level}
       - 指标总数: ${resList.length}
@@ -1692,6 +1744,7 @@ ${dimSchemaText}
       请严格按照以下 JSON 格式输出：
       {
          "core_conclusion": "用一句话概括该名人才的核心评估结论",
+         "overall_score": ${finalOverallScore},
          "general_eval": "参考上述话术模版，生成深度的综合评价报告",
          "core_strengths": "参考模版，列举2-3个核心优势点（必须严格引用指标标题池中的名称）",
          "improvements": "参考模版，列举2-3个待改进及建议点（必须严格引用指标标题池中的名称）",
@@ -1719,7 +1772,7 @@ ${dimSchemaText}
         core_strengths: "证据链完整度高", 
         improvements: "无明显缺失", 
         performance_grade: "B",
-        overall_score: totalScoreValue,
+        overall_score: finalOverallScore,
         metrics: { task_count: resList.length, milestone_count: 0, milestone_completion_rate: 0 }
       };
       try {
@@ -1738,6 +1791,7 @@ ${dimSchemaText}
           }
         };
       }
+      overallSum = { ...overallSum, overall_score: finalOverallScore };
       setOverallSummary(overallSum);
       console.log("Overall Summary done.");
 
@@ -2766,6 +2820,11 @@ function ReportView({
 }) {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const radarPeriodLabel = getEvaluationPeriodLabel(assessmentPeriod);
+  const goalAchievementScore = (results || []).reduce((acc: number, r: any) => acc + (Number(r?.score) || 0) * ((Number(r?.weight) || 0) / 100), 0);
+  const valueCreationScore = Number(valueCreation?.score ?? overallSummary?.value_creation_details?.score ?? 0) || 0;
+  const displayOverallScore = (results || []).length > 0
+    ? Number((goalAchievementScore + valueCreationScore).toFixed(1))
+    : Number(overallSummary?.overall_score || 0);
 
   // Group by Category for the Details tab
   const groupedByCat = results.reduce((acc: any, curr: any) => {
@@ -3037,7 +3096,7 @@ function ReportView({
                 <div className="lg:col-span-7 flex flex-col justify-center space-y-6">
                   <h3 className="text-2xl font-black text-slate-900 leading-tight">岗位能力定性分析</h3>
                   <div className="p-6 bg-slate-50 rounded-2xl border border-slate-100">
-                    <p className="text-sm text-slate-600 leading-relaxed italic">“ {competencyAnalysis?.fit_eval} ”</p>
+                    <p className="text-sm text-slate-600 leading-relaxed whitespace-pre-wrap">{competencyAnalysis?.fit_eval}</p>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="px-4 py-2 bg-indigo-50 border border-indigo-100 rounded-lg">
@@ -3135,7 +3194,7 @@ function ReportView({
                     <div className="flex flex-col items-center gap-4 shrink-0">
                       <div className="size-32 rounded-full border-4 border-slate-100 flex flex-col items-center justify-center p-4">
                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">综合评分</span>
-                         <span className="text-4xl font-black text-slate-900 leading-none">{(overallSummary?.overall_score || 0).toFixed(1)}</span>
+                         <span className="text-4xl font-black text-slate-900 leading-none">{displayOverallScore.toFixed(1)}</span>
                          <span className="text-[10px] font-bold text-indigo-600 mt-1">GPA</span>
                       </div>
                     </div>
@@ -3347,10 +3406,6 @@ function ReportView({
             <div className="grid grid-cols-12 gap-8">
                 <div className="col-span-12 lg:col-span-2 bg-indigo-600/90 rounded-[2.5rem] flex flex-col items-center justify-center p-6 shadow-xl border border-indigo-500/20 gap-4">
                   <span className="text-white font-black text-xl lg:[writing-mode:vertical-rl] uppercase tracking-[0.3em] order-2 lg:order-1">价值创造</span>
-                  <div className="bg-white/20 backdrop-blur-md rounded-2xl p-2 flex flex-col items-center order-1 lg:order-2">
-                    <span className="text-[10px] text-white/70 font-bold">专项得分</span>
-                    <span className="text-xl font-black text-white">+{overallSummary?.value_creation_details?.score || valueCreation?.score || 0}</span>
-                  </div>
                 </div>
                 <div className="col-span-12 lg:col-span-10 bg-white p-10 rounded-[3rem] border border-slate-200 shadow-xl space-y-6">
                   {overallSummary?.value_creation_details?.main_desc && (
@@ -3534,7 +3589,7 @@ function ReportView({
                  
                  <div className="flex items-center gap-8 text-right shrink-0">
                     <div>
-                      <div className="text-3xl font-black text-indigo-600">{(overallSummary?.overall_score || 0).toFixed(1)}</div>
+                      <div className="text-3xl font-black text-indigo-600">{displayOverallScore.toFixed(1)}</div>
                       <div className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">最终审计总分</div>
                     </div>
                  </div>

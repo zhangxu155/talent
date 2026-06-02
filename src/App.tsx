@@ -934,6 +934,28 @@ function strengthDimsSafe(dims: string[]) {
   return dims.length > 0 ? dims : ["岗位核心交付能力"];
 }
 
+function splitOverviewText(value: any, maxLen = 80): string[] {
+  const raw = String(value || "").trim();
+  if (!raw) return ["审计已完成。"];
+  const explicitParts = raw.split(/\n+/).map((part) => part.trim()).filter(Boolean);
+  const sourceParts = explicitParts.length > 1 ? explicitParts : raw.split(/(?<=[。；;])/).map((part) => part.trim()).filter(Boolean);
+  const paragraphs: string[] = [];
+  let current = "";
+
+  for (const part of sourceParts.length > 0 ? sourceParts : [raw]) {
+    if (!current) {
+      current = part;
+    } else if ((current + part).length <= maxLen) {
+      current += part;
+    } else {
+      paragraphs.push(current);
+      current = part;
+    }
+  }
+  if (current) paragraphs.push(current);
+  return paragraphs.length > 0 ? paragraphs : [raw];
+}
+
 function buildEvaluationConclusionText(overallSummary: any, competencyAnalysis: any, results: any[], knowledge: any) {
   const topResults = Array.from(new Set((results || [])
     .filter((r: any) => Number(r?.score) >= 80)
@@ -1830,7 +1852,7 @@ ${dimSchemaText}
       【重要要求 - 严禁编造】：
       1. 这是一份对【人】的评估，而非产品或模型。语气应客观、专业、具有洞察力。
       2. 核心优势（core_strengths）和改进建议（improvements）：必须直接从上面的【可引用指标标题池】中选择最相关的指标名称进行引用。严禁捏造任何不在池中的项目名称。
-      3. 综合评价（general_eval）：请务必整合“任务指标达成”与“团队培养/能力沉淀”两个维度。如果没有明确的团队培养数据，请基于其岗位级别（领军人才）给出合理的专业建议。
+      3. 综合评价（general_eval）：请务必整合“任务指标达成”与“团队培养/能力沉淀”两个维度，并用 2-3 段短文本输出，段落之间用换行符 \n 分隔；不要输出一整段长文本。
       4. 价值创造部分（value_creation_details）：请务必一一对照审计证据库。如果在“产品项目”、“经营收益”、“技术创新”、“行业影响”四个维度中，某一项【缺乏具体交付物数据证据】支撑，则该项务必返回 null。严禁使用通用套话。
       5. 产品项目定义：只要审计数据中涉及 P 或 E 开头的项目号（如 P717、E900），均归为“产品项目”。product_projects 请使用固定话术：“主导完成XX等XX个车型项目，并在项目推进、方案交付与跨部门协同中表现较好”。
       6. evaluation_conclusion 不体现人在什么梯队，也不要写“需要培养什么能力”；请从业绩成果、能力强项、能力适配等方面形成综合结论，参考格式：“经评价，人才在XX方面业绩贡献突出，并有有效的知识沉淀，能力与岗位需求整体符合，且XX关键能力突出，岗位匹配度较高，建议XX或者留用不留用”。
@@ -3314,9 +3336,11 @@ function ReportView({
                           <CheckCircle2 className="size-5 text-indigo-600" />
                           综合评价
                         </h3>
-                        <p className="text-sm text-slate-600 leading-relaxed font-medium whitespace-pre-wrap">
-                          {overallSummary?.general_eval || overallSummary?.summary || "审计已完成。"}
-                        </p>
+                        <div className="space-y-3 text-sm text-slate-600 leading-relaxed font-medium">
+                          {splitOverviewText(overallSummary?.general_eval || overallSummary?.summary || "审计已完成。").map((paragraph, idx) => (
+                            <p key={idx}>{paragraph}</p>
+                          ))}
+                        </div>
                       </div>
 
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

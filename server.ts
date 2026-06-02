@@ -15,6 +15,10 @@ import { Decimal } from "decimal.js";
 import { execFile } from "child_process";
 import os from "os";
 const XLSX = require("xlsx");
+const DEBUG_LOGS = /^(1|true|yes)$/i.test(String(process.env.DEBUG_LOGS || ""));
+const debugLog = (...args: any[]) => {
+  if (DEBUG_LOGS) console.log(...args);
+};
 
 // --- Types ---
 interface Evidence {
@@ -69,6 +73,7 @@ interface EvaluationTask {
   overall_summary?: any;
   category_stats?: any[];
   competency_analysis?: any;
+  debug_scoring_details?: any[];
   created_at?: string;
 }
 
@@ -318,7 +323,34 @@ async function extractPdfTextWithVLM(filePath: string, fileName: string, runtime
 }
 
 async function extractImageTextWithOCR(filePath: string): Promise<string> {
-  // Use officeParser OCR pipeline to avoid tesseract.js worker fetch crashes in restricted environments.
+  const ext = path.extname(filePath).toLowerCase();
+
+  // Align runtime OCR behavior with the standalone OCR script:
+  // PDF -> pdftoppm -> tesseract(page by page) -> merged text.
+  if (ext === ".pdf") {
+    let pageImages: string[] = [];
+    try {
+      pageImages = await pdfToImagesWithPdftoppm(filePath, 180);
+      if (pageImages.length === 0) return "";
+
+      const pageTexts: string[] = [];
+      for (let i = 0; i < pageImages.length; i++) {
+        const pageNo = i + 1;
+        const ocr = await runTesseractOCR(pageImages[i]);
+        if (!ocr) continue;
+        pageTexts.push(`# 第 ${pageNo} 页\n\n${ocr}`);
+      }
+      return pageTexts.join("\n\n").trim();
+    } catch (err: any) {
+      console.warn(`[OCR][PDF] pdftoppm+tesseract pipeline failed: ${String(err?.message || err)}`);
+      return "";
+    } finally {
+      const dirs = new Set(pageImages.map(p => path.dirname(p)));
+      dirs.forEach((d) => fs.rmSync(d, { recursive: true, force: true }));
+    }
+  }
+
+  // Non-PDF files keep using officeParser OCR fallback.
   return parseOfficeToText(filePath, {
     ocr: true,
     ocrConfig: {
@@ -328,21 +360,72 @@ async function extractImageTextWithOCR(filePath: string): Promise<string> {
   });
 }
 
-async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
-  try {
-    const ast = await officeParser.parseOffice(filePath, options);
-    if (ast && typeof ast.toText === "function") {
-      return String(ast.toText() || "").trim();
+function normalizeOfficeParserText(data: any): string {
+  if (!data) return "";
+  if (typeof data === "string") return data.trim();
+  if (data && typeof data.toText === "function") return String(data.toText() || "").trim();
+  if (data && typeof data === "object") {
+    const directText = String(data.text || data.data || data.content || "").trim();
+    if (directText) return directText;
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return "";
     }
-    if (typeof ast === "string") return ast.trim();
-    if (ast && typeof ast === "object") {
-      return String((ast as any).text || "").trim();
-    }
-    return "";
-  } catch (err: any) {
-    console.warn("officeParser parse failed:", err.message);
-    return "";
   }
+  return String(data || "").trim();
+}
+
+async function parseOfficeToText(filePath: string, options: any = {}): Promise<string> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (text: string) => {
+      if (settled) return;
+      settled = true;
+      resolve(String(text || "").trim());
+    };
+
+    const callback = (data: any, err: any) => {
+      if (err) {
+        console.warn("officeParser parse failed:", err.message || err);
+        finish("");
+        return;
+      }
+      finish(normalizeOfficeParserText(data));
+    };
+
+    try {
+      const maybePromise = Object.keys(options || {}).length > 0
+        ? officeParser.parseOffice(filePath, callback, options)
+        : officeParser.parseOffice(filePath, callback);
+      if (maybePromise && typeof maybePromise.then === "function") {
+        maybePromise
+          .then((data: any) => finish(normalizeOfficeParserText(data)))
+          .catch((err: any) => {
+            console.warn("officeParser parse failed:", err.message || err);
+            finish("");
+          });
+      }
+    } catch (err: any) {
+      console.warn("officeParser parse failed:", err.message || err);
+      finish("");
+    }
+  });
+}
+
+function logPptxModelInput(prompt: string) {
+  if (!DEBUG_LOGS) return;
+  const rawPrompt = String(prompt || "");
+  const fileMatch = rawPrompt.match(/当前交付物文件：([^\n\r]+\.(?:pptx|ppt))\b/i);
+  if (!fileMatch) return;
+
+  const fileName = fileMatch[1].trim();
+  const textMatch = rawPrompt.match(/文件文本：[ \t]*(?:\r?\n)([\s\S]*?)(?:\r?\n[ \t]*要求：|\r?\n[ \t]*请输出JSON：|$)/);
+  const modelInputText = textMatch ? textMatch[1].trim() : "";
+  debugLog(`\n[PPTX_MODEL_INPUT][${fileName}] length=${modelInputText.length}`);
+  debugLog("========== PPTX 输入给模型的解析文本 BEGIN ==========");
+  debugLog(modelInputText || "[空文本]");
+  debugLog("========== PPTX 输入给模型的解析文本 END ==========\n");
 }
 
 function looksLikeBinaryOrBase64Blob(text: string): boolean {
@@ -365,7 +448,7 @@ export async function extractFileText(
   const traceId = `TRACE_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   
   try {
-    console.log(`[PARSE][${traceId}] start file=${fileName} ext=${ext} size=${buffer.length}`);
+    debugLog(`[PARSE][${traceId}] start file=${fileName} ext=${ext} size=${buffer.length}`);
     let extracted = "";
     if (ext === ".pdf") {
       // Robust PDF parser resolution based on logged keys
@@ -410,7 +493,7 @@ export async function extractFileText(
             data = await (pdfParser as any)(buffer);
           } catch (fnErr: any) {
             if (fnErr.message?.includes("Class constructors cannot be invoked without 'new'")) {
-              console.log("PDF parser is a class, instantiating with 'new'");
+              debugLog("PDF parser is a class, instantiating with 'new'");
               data = await new (pdfParser as any)(buffer);
             } else {
               throw fnErr;
@@ -440,7 +523,7 @@ export async function extractFileText(
       // Integration hardening for real business PDFs:
       // if parser returns empty/garbled text, try OCR fallback so upload flow remains usable.
       const cleanedPdfText = String(extracted || "").trim();
-      console.log(`[PARSE][${traceId}] pdf parser raw length=${cleanedPdfText.length} binaryLike=${looksLikeBinaryOrBase64Blob(cleanedPdfText)}`);
+      debugLog(`[PARSE][${traceId}] pdf parser raw length=${cleanedPdfText.length} binaryLike=${looksLikeBinaryOrBase64Blob(cleanedPdfText)}`);
       if (!cleanedPdfText || looksLikeBinaryOrBase64Blob(cleanedPdfText)) {
         console.warn(`[PARSE][${traceId}] PDF text empty/garbled, fallback to OCR pipeline`);
         const ocrText = await extractImageTextWithOCR(filePath);
@@ -467,16 +550,8 @@ export async function extractFileText(
       const data = await mammoth.extractRawText({ buffer });
       extracted = data.value || "";
     } else if (ext === ".doc" || ext === ".pptx" || ext === ".ppt") {
-      extracted = await new Promise((resolve) => {
-        officeParser.parseOffice(filePath, (data: any, err: any) => {
-          if (err || !data) {
-            console.warn(`OfficeParser failed for ${fileName}:`, err);
-            resolve("");
-          } else {
-            resolve(data);
-          }
-        });
-      });
+      extracted = await parseOfficeToText(filePath);
+      debugLog(`[PARSE][${traceId}] officeParser text length=${String(extracted || "").length} ext=${ext}`);
     } else if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".webp" || ext === ".bmp" || ext === ".tif" || ext === ".tiff") {
       extracted = await extractImageTextWithOCR(filePath);
     } else if (ext === ".txt" || ext === ".md" || ext === ".json" || ext === ".csv") {
@@ -485,7 +560,7 @@ export async function extractFileText(
 
     const trimmed = (typeof extracted === 'string' ? extracted : String(extracted || "")).trim();
     const normalized = looksLikeBinaryOrBase64Blob(trimmed) ? "" : trimmed;
-    console.log(`[PARSE][${traceId}] normalized length=${normalized.length} ext=${ext}`);
+    debugLog(`[PARSE][${traceId}] normalized length=${normalized.length} ext=${ext}`);
     if (normalized.length < 10 && buffer.length > 1000) {
       if (ext === ".pdf") {
         console.warn(`[PARSE][${traceId}] entering deep PDF fallback chain (office OCR -> VLM pages -> VLM full)`);
@@ -753,13 +828,13 @@ async function startServer() {
 
   // NEW: Staging API for incremental uploads
   app.post("/api/v1/evaluation/tasks/stage", upload.array("files", 20), async (req: any, res) => {
-    console.log(`Staging request received. Task ID: ${req.body.task_id || 'new'}. Files: ${req.files?.length || 0}`);
+    debugLog(`Staging request received. Task ID: ${req.body.task_id || 'new'}. Files: ${req.files?.length || 0}`);
     try {
       const { task_id } = req.body;
       const id = task_id || uuidv4();
       
       if (!tasks[id]) {
-        console.log(`Creating new task for staging: ${id}`);
+        debugLog(`Creating new task for staging: ${id}`);
         tasks[id] = {
           task_id: id,
           status: "STAGING",
@@ -785,7 +860,7 @@ async function startServer() {
       });
 
       for (const f of newFiles) {
-        console.log(`Extracting text from: ${f.originalname} (${f.size} bytes)`);
+        debugLog(`Extracting text from: ${f.originalname} (${f.size} bytes)`);
         const text = await extractFileText(f.path, f.originalname, aiConfig);
         tasks[id].deliverable_files.push({
           id: uuidv4(),
@@ -796,7 +871,7 @@ async function startServer() {
         });
       }
 
-      console.log(`Staging complete for task ${id}. Total deliverables: ${tasks[id].deliverable_files.length}`);
+      debugLog(`Staging complete for task ${id}. Total deliverables: ${tasks[id].deliverable_files.length}`);
       res.json({ code: 200, data: { task_id: id, count: tasks[id].deliverable_files.length } });
     } catch (e: any) {
       console.error("Staging error:", e);
@@ -940,11 +1015,20 @@ async function startServer() {
       overall_summary, 
       category_stats,
       competency_analysis,
+      debug_capability_dims,
+      debug_scoring_details,
       status, 
       is_append = true 
     } = req.body;
 
-    console.log(`Syncing Task ${req.params.task_id}: is_append=${is_append}, evidences=${evidences?.length}, results=${results?.length}, status=${status}`);
+    debugLog(`Syncing Task ${req.params.task_id}: is_append=${is_append}, evidences=${evidences?.length}, results=${results?.length}, status=${status}`);
+    if (debug_capability_dims) {
+      debugLog(`[CAPABILITY][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
+    if (debug_scoring_details) {
+      task.debug_scoring_details = debug_scoring_details;
+      debugLog(`[SCORING][SYNC_DEBUG][${req.params.task_id}]`, JSON.stringify(debug_scoring_details, null, 2));
+    }
 
     if (!task.evidences) task.evidences = [];
     if (!task.clause_results) task.clause_results = [];
@@ -961,10 +1045,10 @@ async function startServer() {
         const existingIds = new Set(task.evidences.map(e => e.evidence_id));
         const newEvidences = evidences.filter((e: any) => !existingIds.has(e.evidence_id));
         task.evidences = [...task.evidences, ...newEvidences];
-        console.log(`Appended ${newEvidences.length} evidences to Task ${task.task_id}. Total: ${task.evidences.length}`);
+        debugLog(`Appended ${newEvidences.length} evidences to Task ${task.task_id}. Total: ${task.evidences.length}`);
       } else {
         task.evidences = evidences;
-        console.log(`Overwrote evidences for Task ${task.task_id}. Total: ${task.evidences.length}`);
+        debugLog(`Overwrote evidences for Task ${task.task_id}. Total: ${task.evidences.length}`);
       }
     }
 
@@ -986,7 +1070,7 @@ async function startServer() {
     
     if (status) {
       task.status = status;
-      console.log(`Task ${task.task_id} status updated to: ${status}`);
+      debugLog(`Task ${task.task_id} status updated to: ${status}`);
     }
 
     res.json({ 
@@ -1024,6 +1108,7 @@ async function startServer() {
       evaluation_period, assessment_period,
       clauses, results, evidences, 
       category_stats, competency_analysis,
+      debug_capability_dims, debug_scoring_details,
       overall_summary, value_creation,
       status 
     } = req.body;
@@ -1050,8 +1135,15 @@ async function startServer() {
     if (overall_summary) task.overall_summary = overall_summary;
     if (value_creation) task.value_creation = value_creation;
     if (status) task.status = status;
+    if (debug_capability_dims) {
+      debugLog(`[CAPABILITY][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_capability_dims, null, 2));
+    }
+    if (debug_scoring_details) {
+      task.debug_scoring_details = debug_scoring_details;
+      debugLog(`[SCORING][UPSERT_DEBUG][${task_id}]`, JSON.stringify(debug_scoring_details, null, 2));
+    }
 
-    console.log(`Upserted Task ${task_id}: status=${task.status}, clauses=${task.clauses?.length}`);
+    debugLog(`Upserted Task ${task_id}: status=${task.status}, clauses=${task.clauses?.length}`);
     res.json({ code: 200, message: "Upsert successful", task_id });
   });
 
@@ -1063,6 +1155,7 @@ async function startServer() {
       data: task ? { 
         status: task.status, 
         progress: task.progress,
+        assessment_period: task.assessment_period,
         contractText: task.contract_file?.text,
         deliverables: task.deliverable_files.map(f => ({ name: f.name, text: f.text }))
       } : {} 
@@ -1086,7 +1179,8 @@ async function startServer() {
         value_creation: task?.value_creation || null,
         overall_summary: task?.overall_summary || null,
         category_stats: task?.category_stats || [],
-        competency_analysis: task?.competency_analysis || null
+        competency_analysis: task?.competency_analysis || null,
+        debug_scoring_details: task?.debug_scoring_details || []
       } 
     });
   });
@@ -1136,10 +1230,11 @@ async function startServer() {
       const body = {
         model: config.localModel || "default",
         messages: [{ role: 'user', content: prompt }],
-        temperature: config.temperature || 0.1
+        temperature: config.temperature ?? 0.1
       };
 
-      console.log(`AI Proxy: Calling ${targetUrl} with model ${body.model}`);
+      logPptxModelInput(prompt);
+      debugLog(`AI Proxy: Calling ${targetUrl} with model ${body.model}`);
 
       const aiResponse = await fetch(targetUrl, {
         method: 'POST',
@@ -1214,7 +1309,7 @@ async function startServer() {
   app.post("/api/v1/files/upload", upload.single("file"), async (req: any, res) => {
     try {
       if (req.file?.originalname) req.file.originalname = normalizeUploadFileName(req.file.originalname);
-      console.log("Quick upload hit:", req.file?.originalname);
+      debugLog("Quick upload hit:", req.file?.originalname);
       if (!req.file) {
         console.error("Quick upload: No file attached");
         return res.status(400).json({ code: 400, message: "No file uploaded" });
@@ -1226,6 +1321,8 @@ async function startServer() {
         console.warn("Filename decoding failed, using raw name", err);
       }
       const text = await extractFileText(f.path, f.originalname, aiConfig);
+      const preview = String(text || "").replace(/\s+/g, " ").slice(0, 500);
+      debugLog(`[QUICK_EXTRACT][${f.originalname}] extracted length=${String(text || "").length} preview=${preview}`);
       res.json({ code: 200, data: { extractedText: text } });
     } catch (e: any) {
       console.error("Quick extraction error:", e);

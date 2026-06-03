@@ -1,472 +1,905 @@
-# AI 绩效考评系统 PRD / 功能设计文档
+# AI 绩效考评系统 PRD / 功能设计文档（重写版）
 
-> 目标：本文档用于让另一位大模型在没有阅读原始代码的情况下，尽可能复刻出与当前项目一致的系统。文档覆盖产品目标、用户流程、页面状态、接口、数据结构、AI 提示词约束、评分规则、报告呈现与非功能要求。
+> 本文档用于指导大模型或研发团队重新开发一个与现有项目**业务流程、评分口径、报告结构一致**的系统。  
+> 文档刻意避免绑定某一版源码实现；如需技术选型，可在不改变业务规则与接口语义的前提下自行替换。
+
+---
+
+## 0. 给大模型的开发指令
+
+如果你将本文档交给大模型开发系统，请要求它遵守以下原则：
+
+1. **先实现业务闭环，再优化 UI 与工程细节**：合同解析、分指标上传证据、逐指标审计、评分、人工校准、报告生成必须形成闭环。
+2. **不要把全部附件混在一起审计**：每个指标必须绑定独立证据材料，按指标单独评估。
+3. **不要凭空打分**：所有实际达成值、证据摘要、价值创造、能力评价都必须尽量来源于用户上传材料。
+4. **会议纪要不能单独证明完成**：会议纪要可作为佐证；没有非纪要实质证据时，不能直接判为“完成”。
+5. **AI 输出必须有结构化 JSON 约束**：合同解析、文件审计、指标汇总、价值创造、能力分析、综合总结都必须要求模型返回结构化 JSON。
+6. **评分规则要可解释**：每个指标需要展示分数、公式或 AI 兜底原因、证据来源。
+7. **报告要可复核**：报告中的每个指标结论都要能追溯到证据文件和证据片段。
+
+---
 
 ## 1. 产品概述
 
 ### 1.1 产品名称
 
-AI 绩效考评系统（人才价值数字化评估系统）。
+AI 绩效考评系统 / 数字化人才价值评估系统。
 
 ### 1.2 产品定位
 
-面向 HR、业务主管、绩效评审专家的本地化 AI 绩效审计与人才价值评估工具。系统通过上传绩效合同、岗位说明/胜任力模型、简历与分指标交付物，自动完成：
+本系统面向 HR、业务主管、绩效评审专家，用于对员工或专家人才的绩效合同、交付物、岗位胜任力材料进行智能审计，自动生成可解释、可复核的绩效评价报告。
 
-1. 绩效合同指标解析；
-2. 每个指标的证据材料审计；
-3. 规则引擎复算与 AI 兜底评分；
-4. 价值创造专项加分；
-5. 岗位胜任力/潜力雷达图分析；
-6. 人工校准；
-7. 数字化人才价值评估报告生成与历史记录查看。
+系统不是单纯的聊天问答工具，而是一个围绕“绩效合同指标”的结构化评估工作台。
 
-### 1.3 核心设计原则
+### 1.3 核心价值
 
-- **指标先行**：必须先解析绩效合同，得到指标列表，再要求用户针对每个指标分别上传交付物。
-- **分指标独立审计**：一个指标只审计该指标绑定的文件，避免泛化使用其它指标材料。
-- **证据优先**：所有评分、结论、价值创造与能力判断都应尽量引用交付物文本证据。
-- **非纪要实质证据约束**：会议纪要可作为佐证，但没有非纪要实质证据时，不允许仅凭会议纪要直接判定指标完成。
-- **本地模型优先**：默认通过本地 OpenAI 兼容接口调用大模型，服务端提供 AI 代理以规避 CORS 并保护 API Key。
-- **内存态交付版**：当前实现以服务端内存保存任务，不包含持久化数据库；上传文件保存在本地 `uploads/` 目录。
-
-## 2. 目标用户与场景
-
-### 2.1 目标用户
-
-| 用户 | 主要诉求 |
+| 价值 | 说明 |
 | --- | --- |
-| HR/组织发展人员 | 标准化绩效评审、统一话术、生成报告 |
-| 业务主管/评审经理 | 快速审阅交付物证据、人工校准 AI 结果 |
-| 被评估员工/专家人才 | 获得基于证据的绩效与能力评价 |
-| 系统管理员 | 配置本地模型接口、检查文件解析链路 |
+| 标准化 | 将不同员工、不同项目的评估流程标准化，降低主观随意性。 |
+| 可追溯 | 每个结论尽量绑定证据文件、原文摘录、证据摘要。 |
+| 可解释 | 分数由规则引擎或 AI 兜底生成，需展示评分逻辑。 |
+| 高效率 | 自动解析合同、审计附件、生成报告，减少人工翻阅材料时间。 |
+| 支持人工校准 | AI 结果不是最终裁决，评审人可调整关键分数并记录评语。 |
 
-### 2.2 典型业务场景
+### 1.4 一句话业务闭环
 
-1. 评审人员上传员工绩效合同，系统解析出指标。
-2. 系统展示指标卡片，要求用户对每个指标上传对应交付物。
-3. 系统逐指标分析材料，提取证据点、完成状态、实际达成数值与评分依据。
-4. 系统按权重计算目标达成分，并额外评估合同职责之外的价值创造分。
-5. 系统结合岗位说明/胜任力模型与简历，生成岗位匹配度与能力雷达图。
-6. 评审经理人工校准“目标达成”和“价值创造”得分。
-7. 系统生成最终数字化人才价值评估报告，并允许查看历史任务与下载源文件。
+上传绩效合同 → 解析指标 → 针对每个指标上传交付物 → AI 审计证据 → 规则评分/AI 兜底 → 价值创造与能力分析 → 人工校准 → 生成评估报告。
 
-## 3. 范围说明
+---
 
-### 3.1 本期范围
+## 2. 用户角色与权限范围
 
-- AI 配置：本地 OpenAI 兼容模型 URL、模型名、API Key 配置。
-- 任务创建：员工信息、岗位、考核周期、绩效合同、岗位说明/胜任力模型、简历录入。
-- 文件解析：PDF、Office、Excel、图片等文件文本提取；PDF/图片可接入本地 VLM/OCR。
-- 合同指标解析：提取指标分类、标题、目标描述、权重、里程碑。
-- 分指标材料上传：每个指标上传一份或多份交付物。
-- 文件级审计：逐文件识别证据、数字事实、会议纪要属性与单文件完成判断。
-- 指标汇总审计：按指标汇总多文件结果，形成证据链与指标评分。
-- 规则复算：对数字类、百分比类、数量类、负向数值类、里程碑类指标复算分数。
-- 价值创造评估：0-10 分专项加分。
-- 能力分析：岗位适配度、能力雷达图、强弱项与建议。
-- 报告：概览、指标明细、能力分析三层报告视图。
-- 人工校准：目标达成、价值创造两类校准项。
-- 历史记录：当前进程内任务列表与任务详情恢复。
-- 源文件下载：按文件名下载任务关联的合同或交付物。
+### 2.1 用户角色
 
-### 3.2 非本期范围
+| 角色 | 主要行为 |
+| --- | --- |
+| HR / 组织发展人员 | 创建评估任务、上传材料、查看报告、归档结果。 |
+| 业务主管 / 评审经理 | 审阅 AI 结果、人工校准得分、确认最终报告。 |
+| 被评估员工 / 专家人才 | 提供绩效合同、交付物、简历、岗位材料。 |
+| 系统管理员 | 配置本地大模型接口、检查文件解析能力、维护运行环境。 |
 
-- 多租户、权限、登录认证。
-- 数据库持久化与任务跨进程恢复。
-- 审批流/电子签名。
-- 企业通讯录与组织架构同步。
-- 多模型路由与在线模型供应商管理（当前只支持 `provider=local`）。
+### 2.2 权限说明
 
-## 4. 信息架构与页面
+MVP 阶段可不做登录和权限系统，但产品设计上要预留以下权限扩展：
 
-### 4.1 全局导航
+- 普通评审人只能查看自己创建或被授权的任务。
+- 主管可提交人工校准。
+- 管理员可配置模型、查看系统日志、管理上传文件。
 
-系统采用左侧导航/步骤式工作台，至少包含：
+---
 
-1. 新建评估；
-2. 证据上传；
-3. 处理状态；
-4. 人工校准；
-5. 评估报告；
-6. 历史记录；
-7. AI 设置弹窗。
+## 3. 系统范围
 
-### 4.2 新建评估页
+### 3.1 MVP 必须实现
 
-#### 4.2.1 输入项
+1. **AI 设置**
+   - 配置本地 OpenAI 兼容模型地址、模型名、API Key。
+   - 服务端代理调用模型，避免前端直接暴露密钥。
+
+2. **新建评估任务**
+   - 录入员工编号、员工姓名、岗位名称、考核周期。
+   - 上传或粘贴绩效合同。
+   - 可选上传或粘贴岗位说明 / 胜任力模型。
+   - 可选上传或粘贴简历信息。
+
+3. **绩效合同解析**
+   - AI 从合同中解析指标列表。
+   - 每个指标至少包含：指标 ID、分类、标题、目标描述、权重、里程碑。
+
+4. **分指标证据上传**
+   - 系统展示指标列表。
+   - 用户必须针对每个指标分别上传对应交付物。
+   - 支持一个指标绑定多个文件。
+
+5. **文件文本解析**
+   - 支持 PDF、Word、Excel、PPT、图片、纯文本等常见材料。
+   - 扫描 PDF / 图片可接入 OCR 或 VLM。
+
+6. **逐指标审计**
+   - 文件级审计：每个文件单独判断是否包含有效证据。
+   - 指标级汇总：综合该指标全部文件，形成最终完成状态与评分。
+
+7. **评分与证据链**
+   - 支持 0-120 指标分。
+   - 支持数字类、百分比类、数量类、负向数值类、里程碑类指标复算。
+   - 字段不足时允许 AI 兜底，但必须标识兜底原因。
+
+8. **价值创造专项**
+   - 在目标达成之外，评估合同职责外增量贡献，0-10 分。
+
+9. **能力分析**
+   - 结合岗位要求、简历、实际绩效结果生成岗位适配度。
+   - 输出能力雷达图与强弱项建议。
+
+10. **人工校准**
+    - 评审人可校准目标达成分和价值创造分。
+    - 校准需记录分数、评语、评审人、引用证据。
+
+11. **报告生成**
+    - 输出数字化人才价值评估报告。
+    - 报告包含概览、指标明细、能力分析、证据溯源。
+
+12. **历史记录**
+    - 支持查看已创建任务列表。
+    - 支持打开历史任务查看报告与证据。
+
+### 3.2 MVP 不要求实现
+
+- 登录注册与组织权限。
+- 数据库持久化。
+- 审批流、电子签名、消息通知。
+- 多租户隔离。
+- 多模型供应商管理。
+- 报告在线协同编辑。
+
+---
+
+## 4. 核心业务流程
+
+### 4.1 主流程
+
+1. 用户进入系统，配置 AI 模型。
+2. 用户创建评估任务，填写员工基础信息。
+3. 用户上传或粘贴绩效合同。
+4. 系统解析合同，生成指标列表。
+5. 用户检查指标，如解析结果明显错误，可返回修改合同文本后重新解析。
+6. 用户进入证据上传页面。
+7. 用户针对每个指标上传对应交付物。
+8. 系统开始审计：
+   - 对每个指标循环处理；
+   - 对该指标下每个文件做文件级审计；
+   - 对文件级结果做指标级汇总；
+   - 提取证据链；
+   - 根据规则引擎复算或 AI 兜底打分。
+9. 系统汇总目标达成分。
+10. 系统评估价值创造分。
+11. 系统评估岗位胜任力与潜力。
+12. 系统生成综合评价与报告草稿。
+13. 用户进入人工校准页面。
+14. 用户确认或调整关键分数与评语。
+15. 系统生成最终报告。
+16. 用户查看、下载或归档报告。
+
+### 4.2 状态机
+
+| 状态 | 含义 | 进入条件 | 下一步 |
+| --- | --- | --- | --- |
+| `DRAFT` | 草稿 | 用户打开新建任务页 | 提交合同解析 |
+| `PARSING_CONTRACT` | 合同解析中 | 用户提交合同 | `PENDING_EVIDENCE` 或 `PARSE_FAILED` |
+| `PARSE_FAILED` | 合同解析失败 | AI 未返回有效指标 | 返回新建页修改材料 |
+| `PENDING_EVIDENCE` | 等待证据上传 | 合同指标解析成功 | 上传证据并启动审计 |
+| `AUDITING` | 审计中 | 用户点击开始评估 | `REPORT_DRAFT_READY` 或 `FAILED` |
+| `FAILED` | 评估失败 | 系统异常或模型不可用 | 允许重试 |
+| `REPORT_DRAFT_READY` | 报告草稿就绪 | AI 审计完成 | 人工校准 |
+| `CALIBRATING` | 人工校准中 | 用户进入校准页 | 生成最终报告 |
+| `REPORT_READY` | 最终报告就绪 | 校准完成或跳过校准 | 查看报告 / 历史归档 |
+
+### 4.3 异常流程
+
+| 异常 | 处理方式 |
+| --- | --- |
+| 合同内容为空或过短 | 阻止提交，提示补充合同。 |
+| 合同未解析出指标 | 标记 `PARSE_FAILED`，展示模型原始返回或错误摘要。 |
+| 某指标未上传证据 | 该指标判为“未完成”，得 0 分。 |
+| 单个文件解析失败 | 该文件标记失败，不中断其它文件。 |
+| 单个指标审计失败 | 该指标使用兜底结果，不中断其它指标。 |
+| AI 服务不可用 | 重试；多次失败后提示检查模型配置。 |
+| 上传文件过大 | 提示压缩或分批上传。 |
+| 报告生成失败 | 保留已审计结果，允许重新生成报告。 |
+
+---
+
+## 5. 页面与交互需求
+
+### 5.1 全局布局
+
+建议采用工作台式布局：
+
+- 左侧导航：新建评估、证据上传、处理状态、人工校准、评估报告、历史记录、AI 设置。
+- 主内容区：根据当前步骤展示表单、指标卡片、进度、报告等。
+- 顶部或侧边显示当前任务基本信息。
+
+### 5.2 新建评估页
+
+#### 5.2.1 表单字段
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| 员工编号 `employee_id` | 是 | 任意字符串 |
-| 员工姓名 `employee_name` | 是 | 报告展示姓名 |
-| 岗位名称 `job_name` | 是 | 如“高级技术架构师” |
-| 考核周期开始 `start` | 是 | 日期字符串 |
-| 考核周期结束 `end` | 是 | 日期字符串 |
-| 绩效合同 | 是 | 支持上传文件后解析，也支持手动编辑合同文本 |
-| 岗位说明/胜任力指标 | 否 | 支持文件解析或文本录入；系统只稳定提取“能力项”列 |
-| 简历信息 | 否 | 支持文件解析或文本录入 |
+| 员工编号 | 是 | 文本。 |
+| 员工姓名 | 是 | 文本。 |
+| 岗位名称 | 是 | 文本。 |
+| 考核开始日期 | 是 | 日期。 |
+| 考核结束日期 | 是 | 日期。 |
+| 绩效合同 | 是 | 上传文件或粘贴文本。 |
+| 岗位说明 / 胜任力模型 | 否 | 上传文件或粘贴文本。 |
+| 简历信息 | 否 | 上传文件或粘贴文本。 |
 
-#### 4.2.2 交互规则
+#### 5.2.2 交互规则
 
-- 上传绩效合同后，系统调用快速文件解析接口展示预览文本。
+- 上传合同后应立即解析文本并展示预览。
 - 用户可切换为手动编辑合同文本。
-- 创建任务时，绩效合同文本长度必须不少于 20 个字符。
-- 创建成功后进入“证据上传”页。
-- 创建失败时停留在状态页，状态为 `PARSE_FAILED`，展示错误消息。
+- 点击“解析合同指标”后进入合同解析状态。
+- 解析成功后展示指标结果并进入证据上传。
 
-### 4.3 证据上传页
+### 5.3 证据上传页
 
-#### 4.3.1 功能
+#### 5.3.1 页面结构
 
-- 展示从绩效合同解析出的每个指标。
-- 每个指标具有独立文件上传区。
-- 用户可对每个指标上传一份或多份交付物。
-- 未上传文件的指标在审计时直接判为未完成、0 分。
-- 页面提示：针对绩效合同中的每一个具体指标上传对应交付物；会议纪要执行特殊判定逻辑。
+- 顶部展示评估对象、周期、指标数量。
+- 下方以卡片或表格展示每个指标：
+  - 指标标题；
+  - 业务分类；
+  - 权重；
+  - 目标描述；
+  - 里程碑；
+  - 文件上传区；
+  - 已上传文件列表。
 
-#### 4.3.2 上传策略
+#### 5.3.2 交互规则
 
-- 前端每个指标保存 `metricFiles[clause_id]`。
-- 单文件上传时调用 `/api/v1/files/upload` 提取文本，并把 `rawFile`、文件名、文本保存在前端状态。
-- 通用分批暂存上传接口为 `/api/v1/evaluation/tasks/stage`，每批 3 个文件，最多 20 个文件/请求。
+- 用户必须看到“请针对每个指标上传对应交付物”的提示。
+- 每个指标可上传多个文件。
+- 文件上传后应显示文件名、解析状态、可选文本预览。
+- 用户可删除误传文件。
+- 点击“开始评估”后进入审计状态。
 
-### 4.4 状态页
+### 5.4 处理状态页
 
-状态页展示当前任务进度与日志，典型状态：
+展示：
 
-| 状态 | 说明 |
-| --- | --- |
-| `PARSING` | 解析绩效合同指标 |
-| `EVIDENCE_READY` | 指标解析完成，等待上传证据 |
-| `AUDITING` | 正在逐指标审计材料 |
-| `COMPLETED` | 审计与报告生成完成 |
-| `FAILED` | 评估失败 |
-| `PARSE_FAILED` | 合同解析失败 |
+- 当前状态；
+- 总体进度；
+- 当前正在处理的指标；
+- 当前正在处理的文件；
+- 错误信息；
+- 可选调试日志。
 
-### 4.5 人工校准页
+典型进度文案：
 
-#### 4.5.1 默认校准项
+- 正在解析绩效合同指标；
+- 正在审计指标 `[1/8]`；
+- 正在提取证据链；
+- 正在计算规则评分；
+- 正在生成价值创造分析；
+- 正在生成能力雷达图；
+- 正在生成综合报告。
 
-| 校准项 | 分值范围 | 默认值 |
+### 5.5 人工校准页
+
+#### 5.5.1 校准项
+
+| 校准项 | 建议范围 | 默认值来源 |
 | --- | --- | --- |
-| 业绩贡献 - 目标达成 | 建议 0-120 | AI 计算的目标达成分 |
-| 业绩贡献 - 价值创造 | 建议 0-10 | AI 计算的价值创造分 |
+| 目标达成 | 0-120 | 指标加权总分。 |
+| 价值创造 | 0-10 | AI 价值创造评分。 |
 
-#### 4.5.2 交互
+#### 5.5.2 字段
 
-- 评审人可输入分数与评语。
-- 提交后写入 `manual_calibrations`。
-- 服务端生成最终报告。
-- 前端轮询 `/api/v1/evaluation/tasks/:task_id/report`，拿到报告后进入报告页。
+每个校准项包含：
 
-### 4.6 报告页
+- 指标名称；
+- 当前 AI 建议分；
+- 人工调整分；
+- 调整理由 / 评语；
+- 评审人；
+- 证据引用。
 
-报告页至少包含三个 Tab：
+### 5.6 报告页
 
-1. **概览**：总分、等级、综合评价、核心优势、待改进、价值创造、能力分析摘要。
-2. **指标明细**：逐指标展示标题、分类、权重、目标基准、实际达成、完成状态、分数、证据摘要、审计溯源。
-3. **能力明细**：岗位匹配度、雷达图、能力强项、能力弱项、建议，每个能力维度展示结论、证据/依据、逻辑。
+报告页分为三个 Tab。
 
-报告需要体现：
+#### 5.6.1 概览 Tab
 
-- 员工信息与考核周期；
-- 总分、目标达成分、价值创造分；
-- 指标数、里程碑数、完成率；
-- 分类达成度；
-- 证据链列表；
-- 评分规则调试信息（可折叠）。
+展示：
 
-### 4.7 历史记录页
+- 员工姓名、编号、岗位、考核周期；
+- 总分、等级、目标达成分、价值创造分；
+- 综合评价；
+- 核心优势；
+- 待改进点；
+- 价值创造摘要；
+- 能力分析摘要；
+- 分类达成度图表。
 
-- 获取当前进程内非 `STAGING` 任务列表。
-- 展示员工姓名、岗位、考核周期、最终分、等级、状态、创建时间。
-- 点击任务后恢复任务 ID，并拉取指标、结果、证据、报告相关数据。
+#### 5.6.2 指标明细 Tab
 
-### 4.8 AI 设置弹窗
+逐指标展示：
+
+- 指标标题；
+- 分类；
+- 权重；
+- 目标基准；
+- 实际达成；
+- 完成状态；
+- 分数；
+- 评分规则；
+- 证据摘要；
+- 证据文件；
+- 原文摘录。
+
+#### 5.6.3 能力分析 Tab
+
+展示：
+
+- 岗位匹配度分；
+- 岗位匹配度评价；
+- 能力雷达图；
+- 能力强项；
+- 能力弱项；
+- 培养 / 任用建议；
+- 每个能力维度的证据与逻辑。
+
+### 5.7 历史记录页
+
+列表字段：
+
+- 任务 ID；
+- 员工姓名；
+- 岗位；
+- 考核周期；
+- 状态；
+- 总分；
+- 等级；
+- 创建时间。
+
+交互：
+
+- 点击任务进入对应报告或任务详情。
+- 支持继续查看证据与指标明细。
+
+### 5.8 AI 设置页 / 弹窗
 
 字段：
 
 | 字段 | 说明 |
 | --- | --- |
-| `provider` | 固定/默认为 `local` |
-| `localUrl` | OpenAI 兼容服务地址，可为基础地址或 `/chat/completions` |
-| `localModel` | 本地模型名称 |
-| `localApiKey` | 可选，作为 Bearer Token |
-| `temperature` | 可选，审计评分会强制不高于 0.01 |
+| 模型服务地址 | OpenAI 兼容接口基础地址或完整 chat completions 地址。 |
+| 模型名称 | 本地模型名称。 |
+| API Key | 可选。 |
+| Temperature | 默认 0.1；评分审计建议使用 0.01 或更低。 |
 
-## 5. 端到端流程
+---
 
-### 5.1 主流程
+## 6. 核心数据结构
 
-1. 用户打开系统，配置本地模型接口。
-2. 用户在新建评估页填写员工信息、考核周期。
-3. 用户上传/录入绩效合同；可上传岗位说明/胜任力模型与简历。
-4. 系统使用 AI 解析合同指标，生成 `clauses`。
-5. 系统创建/更新任务，状态为 `PENDING_EVIDENCE`。
-6. 用户进入证据上传页，为每个指标上传交付物。
-7. 用户点击开始评估。
-8. 系统对每个指标：
-   1. 压缩/截断大文件文本；
-   2. 并发执行文件级审计；
-   3. 汇总多文件审计；
-   4. 生成证据点；
-   5. 按规则引擎复算分数或 AI 兜底；
-   6. 同步增量证据到服务端。
-9. 系统汇总所有指标，按权重计算目标达成分。
-10. 系统评估价值创造，得到 0-10 分。
-11. 系统结合岗位模型与简历生成能力分析。
-12. 系统生成综合总结与报告数据，状态为 `REPORT_READY`。
-13. 用户进入报告页或人工校准页。
-14. 用户提交人工校准后，服务端生成最终报告并返回。
+> 以下为业务数据契约。实际开发可使用 TypeScript interface、JSON Schema、数据库表或后端 DTO 实现。
 
-### 5.2 失败流程
+### 6.1 评估任务 EvaluationTask
 
-- 合同缺失/过短：抛出“绩效合同内容缺失或过短”。
-- 合同解析无指标：抛出“未能从合同中解析出有效指标”。
-- AI 调用失败：前端最多重试 5 次，指数退避；最终展示“AI 服务暂时无法响应”。
-- 上传负载过大：提示 413 Payload Too Large，建议缩减文件数量或分批上传。
-- 文件审计单个 AI 调用失败：该文件返回“文件审计失败”兜底 JSON，不中断整个流程。
-- 指标汇总 AI 调用失败：该指标返回“汇总审计失败”兜底 JSON，不中断其它指标。
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `task_id` | string | 任务 ID。 |
+| `status` | string | 任务状态。 |
+| `progress` | number | 0-100。 |
+| `employee_id` | string | 员工编号。 |
+| `employee_name` | string | 员工姓名。 |
+| `job_name` | string | 岗位名称。 |
+| `assessment_period` | object | `{ start, end }`。 |
+| `contract_text` | string | 合同解析文本。 |
+| `jd_text` | string | 岗位说明 / 胜任力模型文本。 |
+| `resume_text` | string | 简历文本。 |
+| `clauses` | Clause[] | 合同指标。 |
+| `metric_files` | map | `clause_id -> UploadedFile[]`。 |
+| `evidences` | Evidence[] | 证据链。 |
+| `clause_results` | ClauseResult[] | 指标结果。 |
+| `value_creation` | ValueCreation | 价值创造。 |
+| `competency_analysis` | CompetencyAnalysis | 能力分析。 |
+| `overall_summary` | OverallSummary | 总体总结。 |
+| `manual_calibrations` | ManualCalibration[] | 人工校准。 |
+| `report` | Report | 最终报告。 |
+| `created_at` | string | 创建时间。 |
+| `updated_at` | string | 更新时间。 |
 
-## 6. 数据模型
+### 6.2 指标 Clause
 
-### 6.1 EvaluationTask
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `clause_id` | string | 是 | 如 `c1`。 |
+| `raw_category` | string | 否 | 合同原始一级分类，如核心指标。 |
+| `business_category` | string | 是 | 业务分类。 |
+| `category` | string | 是 | 展示分类，建议同业务分类。 |
+| `title` | string | 是 | 指标名称。 |
+| `target_description` | string | 是 | 具体考核基准，禁止“见合同”。 |
+| `weight` | number | 否 | 权重百分比。 |
+| `milestones` | array | 否 | 时间节点。 |
 
-```ts
-interface EvaluationTask {
-  task_id: string;
-  status: string;
-  progress: number;
-  employee_id: string;
-  employee_name: string;
-  job_name: string;
-  assessment_period: { start: string; end: string };
-  deliverable_files: UploadedFile[];
-  contract_file?: UploadedFile;
-  evidences: Evidence[];
-  clauses: Clause[];
-  clause_results: ClauseResult[];
-  value_creation?: ValueCreation;
-  manual_calibrations: ManualCalibration[];
-  report?: GeneratedReport;
-  overall_summary?: OverallSummary;
-  category_stats?: CategoryStat[];
-  competency_analysis?: CompetencyAnalysis;
-  debug_scoring_details?: any[];
-  created_at?: string;
-}
-```
+业务分类优先值：
 
-### 6.2 UploadedFile
+- 产品开发；
+- 平台开发；
+- 技术研发；
+- 体系建设；
+- 人才培养；
+- 行业影响；
+- 其他。
 
-```ts
-interface UploadedFile {
-  id: string;
-  name: string;
-  path: string;
-  status: "SUCCESS" | string;
-  text?: string;
-}
-```
+### 6.3 上传文件 UploadedFile
 
-### 6.3 Clause
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `file_id` | string | 文件 ID。 |
+| `file_name` | string | 原始文件名。 |
+| `file_type` | string | 文件类型。 |
+| `text` | string | 解析后的文本。 |
+| `status` | string | `PENDING / SUCCESS / FAILED`。 |
+| `error_message` | string | 解析失败原因。 |
 
-```ts
-interface Clause {
-  clause_id: string;              // 如 c1、c2
-  raw_category?: string;          // 核心指标/基础指标/观察项
-  business_category?: string;     // 产品开发/平台开发/技术研发/体系建设/人才培养/行业影响
-  category: string;               // 报告业务分类，不允许使用核心指标/基础指标/观察项
-  title: string;                  // 指标名称
-  target_description: string;     // 具体考核基准，禁止“见合同”
-  weight?: number;                // 百分比权重
-  milestones: Milestone[];
-}
+### 6.4 证据 Evidence
 
-interface Milestone {
-  date: string;
-  content: string;
-}
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `evidence_id` | string | 证据 ID。 |
+| `matched_clause_id` | string | 关联指标 ID。 |
+| `source_file_name` | string | 来源文件名。 |
+| `title` | string | 证据标题。 |
+| `raw_excerpt` | string | 原文摘录。 |
+| `summary` | string | 证据摘要。 |
+| `confidence` | number | 置信度 0-1。 |
+| `adopted_flag` | boolean | 是否采纳。 |
 
-### 6.4 Evidence
+### 6.5 指标结果 ClauseResult
 
-```ts
-interface Evidence {
-  evidence_id: string;
-  source_file_id?: string;
-  source_file_name: string;
-  object_type?: string;
-  object_id?: string | null;
-  title: string;
-  raw_excerpt: string;
-  summary: string;
-  location?: any;
-  confidence: number;
-  delay_owner?: string | null;
-  adopted_flag: boolean;
-  duplicate_flag?: boolean;
-  cross_domain_flag?: boolean;
-  key_issue_found_flag?: boolean;
-  close_loop_flag?: boolean;
-  matched_clause_id?: string;
-}
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `clause_id` | string | 指标 ID。 |
+| `title` | string | 指标标题。 |
+| `category` | string | 分类。 |
+| `weight` | number | 权重。 |
+| `target_benchmark` | string | 目标基准。 |
+| `actual_value` | string | 实际达成描述。 |
+| `completion_status` | string | 完成 / 部分完成 / 未完成。 |
+| `score` | number | 0-120。 |
+| `evidence_summary` | string | 证据摘要。 |
+| `matched_evidence_ids` | string[] | 证据 ID。 |
+| `scoring_detail` | object | 评分明细。 |
 
-### 6.5 ClauseResult
+### 6.6 评分明细 ScoringDetail
 
-```ts
-interface ClauseResult {
-  clause_id: string;
-  title: string;
-  category: string;
-  raw_category?: string;
-  business_category?: string;
-  weight?: number;
-  score: number;                  // 0-120
-  target_benchmark: string;
-  completion_status: "完成" | "未完成" | "部分完成" | string;
-  actual_value: string;
-  evidence_summary: string;
-  matched_evidence_ids: string[];
-  scoring_detail?: ScoringDetail | null;
-}
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `source` | string | `rule_engine` 或 `ai_fallback`。 |
+| `rule_type` | string | 指标类型。 |
+| `target_value` | number/null | 目标值。 |
+| `actual_value` | number/null | 实际值。 |
+| `rejected_actual_value` | number/null | 因证据不命中而拒绝的实际值。 |
+| `ai_score` | number | AI 原始分。 |
+| `final_score` | number | 最终分。 |
+| `formula` | string | 公式说明。 |
+| `evidence_files` | string[] | 证据文件。 |
+| `audit_files` | array | 文件级审计摘要。 |
 
-### 6.6 ScoringDetail
+### 6.7 价值创造 ValueCreation
 
-```ts
-interface ScoringDetail {
-  source: "rule_engine" | "ai_fallback";
-  rule_type: "numeric_positive" | "numeric_negative" | "count" | "percentage" | "milestone" | "ai_fallback";
-  target_value: number | null;
-  actual_value: number | null;
-  rejected_actual_value?: number | null;
-  baseline_value?: number | null;
-  early_days?: number;
-  delayed_days?: number;
-  has_challenge?: boolean | null;
-  challenge_met?: boolean | null;
-  on_time?: boolean | null;
-  ai_score: number;
-  final_score: number;
-  formula: string;
-  evidence_files: string[];
-  audit_files: FileAuditDebug[];
-  inferred_from_target?: boolean;
-}
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `score` | number | 0-10。 |
+| `summary` | string | 价值创造摘要。 |
+| `details` | object | 亮点明细。 |
 
-### 6.7 ValueCreation
+### 6.8 能力分析 CompetencyAnalysis
 
-```ts
-interface ValueCreation {
-  score: number;                  // 0-10
-  summary: string;
-  details: Record<string, string>;
-}
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `fit_score` | number | 0-8。 |
+| `fit_eval` | string | 岗位适配评价。 |
+| `radar_data` | array | 雷达图数据。 |
+| `strengths` | string[] | 能力强项。 |
+| `weaknesses` | string[] | 能力弱项。 |
+| `potential_level` | string | 潜力评级。 |
+| `recommendation` | string | 建议。 |
 
-### 6.8 CompetencyAnalysis
+`radar_data` 单项：
 
-```ts
-interface CompetencyAnalysis {
-  fit_score: number;              // 0-8
-  fit_eval: string;
-  radar_data: Array<{
-    subject: string;
-    score: number;                // 0-8，1 位小数
-    baseline: 5;
-    conclusion: string;
-    evidence: string;
-    logic: string;
-  }>;
-  strengths: string[];
-  weaknesses: string[];
-  potential_level: string;
-  recommendation: string;
-  overview?: {
-    fit: string[];
-    strengths: string[];
-    weaknesses: string[];
-    suggestion: string;
-  };
-}
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `subject` | string | 能力维度。 |
+| `score` | number | 0-8。 |
+| `baseline` | number | 固定 5。 |
+| `conclusion` | string | 结论。 |
+| `evidence` | string | 依据。 |
+| `logic` | string | 评估逻辑。 |
 
-### 6.9 OverallSummary
+### 6.9 人工校准 ManualCalibration
 
-```ts
-interface OverallSummary {
-  core_conclusion: string;
-  overall_score: number;
-  general_eval: string;
-  core_strengths: string;
-  improvements: string;
-  performance_grade: string;
-  evaluation_conclusion: string;
-  value_creation_details: {
-    score: number;
-    main_desc: string;
-    product_projects: string | null;
-    business_revenue: string | null;
-    tech_innovation: string | null;
-    industry_influence: string | null;
-  };
-  metrics: {
-    task_count: number;
-    milestone_count: number;
-    milestone_completion_rate: number;
-  };
-}
-```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `metric_name` | string | 校准项名称。 |
+| `score` | number | 人工分。 |
+| `comment` | string | 人工评语。 |
+| `reviewer` | string | 评审人。 |
+| `evidence_refs` | string[] | 引用证据。 |
 
-### 6.10 ManualCalibration
+---
 
-```ts
-interface ManualCalibration {
-  metric_name: string;
-  score: number;
-  comment: string;
-  reviewer: string;               // 默认 manager_001
-  evidence_refs: string[];
-}
-```
+## 7. AI 能力设计
 
-## 7. API 设计
+### 7.1 AI 调用通用要求
 
-统一响应建议：
+- 所有关键 AI 调用必须通过服务端代理。
+- 模型输出应要求为 JSON，不允许输出长篇散文后再让系统猜测。
+- 前端或后端需实现鲁棒 JSON 提取：支持去除 Markdown 代码块、从混合文本中截取 JSON 对象或数组。
+- 对评分相关调用，temperature 应尽量低。
+- AI 调用失败时必须有兜底结果，不应导致整个任务完全中断。
+
+### 7.2 合同解析 AI
+
+#### 输入
+
+- 绩效合同全文。
+
+#### 输出
+
+JSON 数组，每项为一个指标：
 
 ```json
-{ "code": 200, "data": {}, "message": "" }
+[
+  {
+    "clause_id": "c1",
+    "raw_category": "核心指标",
+    "business_category": "产品开发",
+    "category": "产品开发",
+    "title": "P717 项目方案交付",
+    "target_description": "完成 P717 项目底盘动力学方案交付并通过评审",
+    "weight": 20,
+    "milestones": [{ "date": "2024-Q2", "content": "完成方案评审" }]
+  }
+]
 ```
 
-### 7.1 AI 配置
+#### 规则
+
+- `category` 不得填写“核心指标 / 基础指标 / 观察项”。
+- 若合同中存在两层分类，第一层写入 `raw_category`，第二层写入 `business_category` 和 `category`。
+- `target_description` 必须具体，不能写“见合同”。
+- 如果合同无权重，可不填或由系统均分。
+
+### 7.3 文件级审计 AI
+
+#### 输入
+
+- 指标标题；
+- 指标目标描述；
+- 当前文件名；
+- 当前文件文本。
+
+#### 输出
+
+```json
+{
+  "file_name": "交付物.pdf",
+  "is_meeting_minutes": false,
+  "has_substantive_evidence": true,
+  "completion_status": "完成",
+  "score": 95,
+  "summary": "该文件显示方案已完成评审并进入交付阶段。",
+  "scoring_facts": [
+    {
+      "value": 100,
+      "unit": "%",
+      "raw_excerpt": "项目交付完成率达到100%",
+      "meaning": "项目交付完成率"
+    }
+  ],
+  "extracted_evidences": [
+    {
+      "title": "方案评审通过",
+      "raw_excerpt": "评审结论：通过",
+      "summary": "该文件证明方案通过评审。",
+      "confidence": 0.9
+    }
+  ]
+}
+```
+
+#### 规则
+
+- `scoring_facts.value` 必须来自文件原文或原文摘录。
+- 文件没有实际达成数字时，`scoring_facts` 返回空数组。
+- 不允许根据目标值反推实际值。
+- 需要识别会议纪要：`is_meeting_minutes=true/false`。
+
+### 7.4 指标级汇总 AI
+
+#### 输入
+
+- 指标信息；
+- 该指标所有文件级审计结果；
+- 是否存在非纪要实质证据。
+
+#### 输出
+
+```json
+{
+  "summary": "多份材料共同证明该指标已完成核心交付。",
+  "completion_status": "完成",
+  "score": 95,
+  "scoring_fields": {
+    "rule_type": "percentage",
+    "target_value": 100,
+    "actual_value": 100,
+    "baseline_value": null,
+    "has_challenge": null,
+    "challenge_met": null,
+    "early_days": null,
+    "delayed_days": null,
+    "on_time": null,
+    "use_milestone_rule": false,
+    "calculation_note": "实际值来自交付物原文。"
+  },
+  "adopted_files": ["交付物.pdf"],
+  "rejected_files": [],
+  "extracted_evidences": [
+    {
+      "title": "交付完成率达成",
+      "raw_excerpt": "项目交付完成率达到100%",
+      "summary": "证明该指标达到目标完成率。",
+      "confidence": 0.9,
+      "source_file_name": "交付物.pdf"
+    }
+  ]
+}
+```
+
+#### 规则
+
+- 只能依据文件级审计结果。
+- 如果没有非纪要实质证据，最终不得输出“完成”。
+- 会议纪要仅可佐证，不可单独决定完成。
+- `actual_value` 必须来自文件级事实或原文数字。
+- 如果实际值证据不足，`actual_value` 必须为 `null`。
+
+### 7.5 价值创造 AI
+
+#### 输入
+
+- 全部已采纳证据的摘要。
+
+#### 输出
+
+```json
+{
+  "score": 8,
+  "summary": "在架构优化与团队赋能方面形成较明显增量贡献。",
+  "details": {
+    "架构优化": "推动关键方案沉淀并提升交付效率。",
+    "团队赋能": "通过培训和方法复用提升团队能力。"
+  }
+}
+```
+
+#### 规则
+
+- 分数范围 0-10。
+- 只能评价合同职责之外的增量价值。
+- 缺乏证据时应低分或返回保守总结。
+
+### 7.6 能力分析 AI
+
+#### 输入
+
+- 岗位说明 / 胜任力模型；
+- 简历信息；
+- 指标审计结果。
+
+#### 固定能力维度
+
+雷达图必须包含以下四个维度：
+
+1. 培育与协同力；
+2. 创新与战略落地力；
+3. 产品履约交付力；
+4. 技术突破攻坚力。
+
+若岗位胜任力模型中存在明确“能力项”列，可追加这些能力项，但不得遗漏、改名或虚构其它维度。
+
+#### 输出
+
+```json
+{
+  "fit_score": 6.8,
+  "fit_eval": "该员工与当前岗位整体匹配度较高。",
+  "radar_data": [
+    {
+      "subject": "产品履约交付力",
+      "score": 7.2,
+      "baseline": 5,
+      "conclusion": "产品交付能力突出。",
+      "evidence": "多个项目交付指标达成。",
+      "logic": "结合项目履约结果与交付质量综合判断。"
+    }
+  ],
+  "strengths": ["产品履约交付力", "技术突破攻坚力"],
+  "weaknesses": ["跨领域协同深度仍可提升"],
+  "potential_level": "B+",
+  "recommendation": "建议继续承担关键项目并强化跨部门协同。"
+}
+```
+
+### 7.7 综合总结 AI
+
+#### 输入
+
+- 指标结果；
+- 价值创造结果；
+- 能力分析结果；
+- 可引用的指标标题池。
+
+#### 输出
+
+```json
+{
+  "core_conclusion": "该员工在关键项目交付与技术攻坚方面表现突出。",
+  "overall_score": 92.5,
+  "general_eval": "评价期内整体指标达成良好，关键项目交付质量较高。",
+  "core_strengths": "能够主导完成 P717 项目方案交付等重点任务。",
+  "improvements": "建议进一步加强跨领域协同与复盘沉淀。",
+  "performance_grade": "A",
+  "evaluation_conclusion": "经评价，该员工在产品交付方面业绩贡献突出，能力与岗位需求整体匹配。",
+  "value_creation_details": {
+    "score": 8,
+    "main_desc": "在流程优化和知识沉淀方面形成增量价值。",
+    "product_projects": "主导完成 P717 等车型项目，并在项目推进、方案交付与跨部门协同中表现较好。",
+    "business_revenue": null,
+    "tech_innovation": "形成可复用技术方案。",
+    "industry_influence": null
+  },
+  "metrics": {
+    "task_count": 5,
+    "milestone_count": 8,
+    "milestone_completion_rate": 90
+  }
+}
+```
+
+#### 规则
+
+- 核心优势和待改进点必须引用真实指标标题或真实证据，不得编造项目名。
+- 缺少证据的价值创造维度必须返回 `null`。
+- 综合评价不要写空泛套话，应结合指标、证据、能力结果。
+
+---
+
+## 8. 评分规则
+
+### 8.1 分数体系
+
+| 分数 | 范围 | 说明 |
+| --- | --- | --- |
+| 单项指标分 | 0-120 | 可超过 100，表示超额或提前完成。 |
+| 目标达成分 | 0-120 | 按指标权重计算。 |
+| 价值创造分 | 0-10 | 合同职责之外增量贡献。 |
+| 最终总分 | 建议 0-120 | 目标达成分 + 价值创造分，最终可封顶 120。 |
+| 能力维度分 | 0-8 | 用于雷达图。 |
+
+### 8.2 指标类型
+
+| 类型 | 适用场景 |
+| --- | --- |
+| `numeric_positive` | 越高越好的数值指标。 |
+| `numeric_negative` | 越低越好的数值指标，如成本、缺陷率、周期。 |
+| `percentage` | 完成率、覆盖率、达成率等百分比指标。 |
+| `count` | 个数、项数、次数、篇数、项目数等数量指标。 |
+| `milestone` | 有明确计划节点和实际完成时间的里程碑指标。 |
+| `ai_fallback` | 字段不足，无法稳定按规则计算。 |
+
+### 8.3 公式
+
+| 类型 | 公式 | 说明 |
+| --- | --- | --- |
+| 正向数值 | `actual / target * 100` | 最高 120。 |
+| 负向数值 | `(2 - actual / target) * 100` | 最高 120，最低 0。 |
+| 百分比 | `actual / target * 100` | 最高 120。 |
+| 数量 | `100 + (actual - target) * 2` | 每超过 1 个加 2 分，每少 1 个扣 2 分。 |
+| 普通里程碑按期 | `100` | 按期完成。 |
+| 普通里程碑提前 | `100 + early_days / 60 * 20` | 最高 120。 |
+| 普通里程碑拖期 | `100 - delayed_days / 30 * 10` | 最低 80。 |
+| 挑战指标按期 | `110` | 达成挑战目标。 |
+| 挑战指标提前 | `110 + early_days / 30 * 10` | 最高 120。 |
+| 挑战指标拖期 | `110 - delayed_days / 30 * 10` | 最低 90。 |
+
+所有最终分数都必须 clamp 到合法范围。
+
+### 8.4 实际值校验
+
+系统不得直接相信 AI 返回的 `actual_value`，必须校验：
+
+- 实际值是否出现在文件级 `scoring_facts.raw_excerpt`；或
+- 实际值是否出现在证据 `raw_excerpt`；或
+- 实际值是否能以等价格式匹配原文，如 `100`、`100%`、`100.0`。
+
+如果无法命中：
+
+- `actual_value` 置为 `null`；
+- 规则引擎不复算；
+- 使用 AI 兜底分，并在 `scoring_detail.formula` 中说明原因。
+
+### 8.5 会议纪要规则
+
+会议纪要判定逻辑：
+
+1. 文件级审计应识别文件是否为会议纪要。
+2. 会议纪要可以说明“评审通过”“同意推进”“验收通过”等过程信息。
+3. 但如果没有非纪要实质证据，会议纪要不能单独让指标成为“完成”。
+4. 如果只有会议纪要且其中有明显通过信息，可判为“部分完成”，建议分数 80-90。
+5. 如果既没有非纪要实质证据，也没有会议纪要支持，应判为未完成或低分。
+
+### 8.6 权重计算
+
+目标达成分：
+
+```text
+目标达成分 = Σ(指标分 × 指标权重 / 100)
+```
+
+如果合同没有权重：
+
+```text
+目标达成分 = 所有指标分的平均值
+```
+
+分类达成度：
+
+```text
+分类得分 = Σ(同分类指标分 × 指标权重 / 100)
+分类完成率 = 分类得分 / 分类权重 × 100
+```
+
+---
+
+## 9. 文件解析要求
+
+### 9.1 支持文件类型
+
+| 类型 | 要求 |
+| --- | --- |
+| PDF | 提取文本；扫描件可使用 OCR / VLM。 |
+| Word | 提取正文和表格文本。 |
+| Excel | 按工作表提取表格文本，尽量保留表头。 |
+| PPT | 提取页面文本。 |
+| 图片 | 使用 OCR / VLM 提取文字和结构。 |
+| 文本文件 | 直接读取文本。 |
+
+### 9.2 解析质量要求
+
+- 文件解析失败不能导致整个任务失败。
+- 解析文本需要保留文件名，便于后续证据溯源。
+- Excel 中如有“能力项”列，应优先准确提取该列用于能力分析。
+- 对大文件应做文本压缩或相关片段检索，避免超过模型上下文。
+
+### 9.3 本地 VLM / OCR 建议
+
+如接入本地视觉模型：
+
+- PDF 可先转图片，再逐页识别。
+- OCR 结果可与图片一起提供给 VLM 修正。
+- VLM 输出应要求为结构化 Markdown 或纯文本，不得编造文件中不存在的内容。
+
+---
+
+## 10. API 设计
+
+> 以下 API 是推荐契约。实际实现可调整路径，但语义、输入输出和状态流转应保持一致。
+
+### 10.1 AI 配置
 
 #### GET `/api/config/ai`
 
-返回当前 AI 配置。
+返回当前模型配置。
 
 ```json
 {
   "provider": "local",
-  "localUrl": "",
-  "localModel": "",
+  "localUrl": "http://127.0.0.1:11434/v1",
+  "localModel": "qwen2.5",
   "localApiKey": ""
 }
 ```
 
 #### POST `/api/config/ai`
 
-保存配置到当前服务进程内存。
+保存模型配置。
 
-请求体同上，返回：
-
-```json
-{ "code": 200 }
-```
-
-### 7.2 AI 代理
+### 10.2 AI 代理
 
 #### POST `/api/v1/ai/call`
 
@@ -474,169 +907,126 @@ interface ManualCalibration {
 
 ```json
 {
-  "prompt": "用户提示词",
+  "prompt": "...",
   "config": {
     "provider": "local",
     "localUrl": "http://127.0.0.1:11434/v1",
-    "localModel": "qwen2.5-vl:7b",
-    "localApiKey": "optional",
+    "localModel": "qwen2.5",
+    "localApiKey": "",
     "temperature": 0.1
   }
 }
 ```
 
-规则：
-
-- 仅支持 `provider=local`。
-- `localUrl` 若不是 `/chat/completions` 或 `/completions` 结尾，自动补 `/chat/completions`。
-- 请求本地模型时 body：
+响应：
 
 ```json
 {
-  "model": "config.localModel 或 default",
-  "messages": [{ "role": "user", "content": "prompt" }],
-  "temperature": 0.1
+  "code": 200,
+  "data": "模型返回内容"
 }
 ```
 
-返回：
-
-```json
-{ "code": 200, "data": "模型返回文本" }
-```
-
-### 7.3 快速文件解析
+### 10.3 文件上传 / 文本解析
 
 #### POST `/api/v1/files/upload`
 
 - 表单字段：`file`。
-- 单文件大小上限：200MB。
-- 返回：
-
-```json
-{ "code": 200, "data": { "extractedText": "解析后的文本" } }
-```
-
-### 7.4 文件暂存
-
-#### POST `/api/v1/evaluation/tasks/stage`
-
-- 表单字段：`task_id` 可选，`files[]` 最多 20 个。
-- 逻辑：如果无 `task_id` 则创建新任务，状态 `STAGING`；解析文件文本并追加到 `deliverable_files`。
-- 返回：
-
-```json
-{ "code": 200, "data": { "task_id": "uuid", "count": 3 } }
-```
-
-### 7.5 创建/启动评估任务
-
-#### POST `/api/v1/evaluation/tasks`
-
-表单字段：
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `employee_id` | string | 员工编号 |
-| `employee_name` | string | 员工姓名 |
-| `job_name` | string | 岗位名称 |
-| `start_date` | string | 考核开始 |
-| `end_date` | string | 考核结束 |
-| `contract_text` | string | 可选合同文本 |
-| `task_id` | string | 可选暂存任务 ID |
-| `contract` | file | 可选绩效合同文件，最多 1 个 |
-| `deliverables` | file[] | 兼容旧流程，最多 100 个 |
-
-返回：
+- 响应：
 
 ```json
 {
   "code": 200,
   "data": {
-    "task_id": "TASK_...",
-    "contractText": "...",
-    "deliverables": [{ "name": "xx.pdf", "text": "..." }]
+    "file_id": "f1",
+    "file_name": "材料.pdf",
+    "extractedText": "解析后的文本"
   }
 }
 ```
 
-### 7.6 任务 Upsert
+### 10.4 创建任务
 
-#### POST `/api/v1/evaluation/tasks/:task_id/upsert`
+#### POST `/api/v1/evaluation/tasks`
 
-用于创建或更新任务元数据与计算结果。
-
-请求体可包含：
+请求：
 
 ```json
 {
   "employee_id": "E001",
   "employee_name": "张三",
-  "job_name": "高级技术架构师",
-  "evaluation_period": "2024-01-01 ~ 2024-12-31",
+  "job_name": "高级技术专家",
   "assessment_period": { "start": "2024-01-01", "end": "2024-12-31" },
-  "clauses": [],
-  "results": [],
-  "evidences": [],
-  "category_stats": [],
-  "competency_analysis": {},
-  "overall_summary": {},
-  "value_creation": {},
-  "debug_scoring_details": [],
-  "status": "REPORT_READY"
+  "contract_text": "绩效合同全文",
+  "jd_text": "岗位要求",
+  "resume_text": "简历"
 }
 ```
 
-返回：
-
-```json
-{ "code": 200, "message": "Upsert successful", "task_id": "..." }
-```
-
-### 7.7 同步增量结果
-
-#### POST `/api/v1/evaluation/tasks/:task_id/sync-results`
-
-请求体：
+响应：
 
 ```json
 {
-  "clauses": [],
-  "evidences": [],
-  "results": [],
-  "value_creation": {},
-  "overall_summary": {},
-  "category_stats": [],
-  "competency_analysis": {},
-  "debug_scoring_details": [],
-  "status": "AUDITING",
-  "is_append": true
+  "code": 200,
+  "data": {
+    "task_id": "TASK_001",
+    "status": "PARSING_CONTRACT"
+  }
 }
 ```
 
-规则：
+### 10.5 保存合同解析结果
 
-- `is_append=true` 时按 `clause_id`/`evidence_id` 去重追加。
-- `is_append=false` 时覆盖对应集合。
+#### POST `/api/v1/evaluation/tasks/:task_id/clauses`
 
-返回：
+请求：
 
 ```json
-{ "code": 200, "message": "Sync successful", "evidence_count": 12, "status": "AUDITING" }
+{
+  "clauses": []
+}
 ```
 
-### 7.8 查询接口
+### 10.6 上传指标证据
 
-| 方法 | 路径 | 返回 |
-| --- | --- | --- |
-| GET | `/api/v1/evaluation/tasks` | 任务列表，不包含 `STAGING` |
-| GET | `/api/v1/evaluation/tasks/:task_id/status` | 状态、进度、考核周期、合同文本、交付物文本 |
-| GET | `/api/v1/evaluation/tasks/:task_id/evidences` | 证据列表 |
-| GET | `/api/v1/evaluation/tasks/:task_id/contract-clauses` | 指标列表 |
-| GET | `/api/v1/evaluation/tasks/:task_id/clause-results` | 指标结果、价值创造、总体总结、分类统计、能力分析、调试评分 |
-| GET | `/api/v1/evaluation/tasks/:task_id/report` | 报告 |
+#### POST `/api/v1/evaluation/tasks/:task_id/metrics/:clause_id/files`
 
-### 7.9 人工校准与报告生成
+- 表单字段：`files[]`。
+- 响应返回该指标已绑定文件列表。
+
+### 10.7 启动审计
+
+#### POST `/api/v1/evaluation/tasks/:task_id/start-audit`
+
+响应：
+
+```json
+{
+  "code": 200,
+  "data": {
+    "status": "AUDITING"
+  }
+}
+```
+
+### 10.8 同步审计结果
+
+#### POST `/api/v1/evaluation/tasks/:task_id/results`
+
+请求：
+
+```json
+{
+  "clause_results": [],
+  "evidences": [],
+  "value_creation": {},
+  "competency_analysis": {},
+  "overall_summary": {},
+  "status": "REPORT_DRAFT_READY"
+}
+```
+
+### 10.9 人工校准
 
 #### POST `/api/v1/evaluation/tasks/:task_id/manual-review`
 
@@ -645,568 +1035,249 @@ interface ManualCalibration {
 ```json
 {
   "items": [
-    { "metric_name": "业绩贡献 - 目标达成", "score": 90, "comment": "...", "reviewer": "manager_001", "evidence_refs": [] }
+    {
+      "metric_name": "目标达成",
+      "score": 92,
+      "comment": "证据充分，维持较高评分。",
+      "reviewer": "manager_001",
+      "evidence_refs": []
+    }
   ]
 }
 ```
 
-响应：
-
-```json
-{ "code": 200 }
-```
+### 10.10 生成报告
 
 #### POST `/api/v1/evaluation/tasks/:task_id/generate-report`
 
-生成最终报告，返回：
+生成最终报告。
 
-```json
-{ "code": 200 }
-```
+### 10.11 查询接口
 
-### 7.10 文件下载
-
-#### GET `/api/v1/evaluation/tasks/:task_id/files/download?name=文件名`
-
-- 在任务的 `deliverable_files` 与 `contract_file` 中按文件名精确或模糊匹配。
-- 找到后返回文件下载。
-- 找不到返回 404 JSON。
-
-## 8. 文件解析要求
-
-### 8.1 支持格式
-
-- PDF：优先 `pdf-parse`；若抽取文本质量差，使用 PDF 转图片 + OCR/VLM。
-- 图片：支持 png、jpg、jpeg、webp、bmp、tif、tiff，通过本地 VLM 或 OCR 抽取。
-- Word/Office：使用 `officeparser`、`mammoth` 等工具解析。
-- Excel：使用 `xlsx` 抽取工作表 CSV 文本。
-- 其它文本类文件：尽量按 UTF-8 文本读取。
-
-### 8.2 PDF/VLM 解析
-
-- 本地 VLM 配置来源优先级：环境变量 `LOCAL_VLM_URL` / `VLM_URL` / `QWEN_API_URL`，其次运行时配置 `localUrl`。
-- 模型名优先级：`LOCAL_VLM_MODEL` / `VLM_MODEL` / `QWEN_MODEL`，默认 `faw-vlm`。
-- API Key 优先级：`LOCAL_VLM_API_KEY` / `VLM_API_KEY` / `QWEN_API_KEY`。
-- PDF 使用 `pdftoppm` 转 PNG，默认 180 DPI，最多处理前 8 页。
-- 每页先用 `tesseract` 识别 `chi_sim+eng`，再把图片 + OCR 文本发给本地 VLM，要求输出 Markdown。
-
-### 8.3 大文件压缩
-
-- 本地模型模式下，对每个指标的文件文本进行智能压缩，只保留与指标标题、考核基准更相关的片段。
-- 文件级审计 prompt 中，文本截断上限：本地模型约 10,000 字符，非本地模型约 12,000 字符。
-
-## 9. AI 提示词与输出约束
-
-### 9.1 合同解析 Prompt
-
-角色：专业 HR 绩效考评解析专家。
-
-输入：绩效合同全文，最多截取 20,000 字符。
-
-强约束：
-
-- 识别每一个“考核指标/重点工作”。
-- 合同表格中的“核心指标/基础指标/观察项”属于第一层分类，只能写入 `raw_category`。
-- `category` 与 `business_category` 必须是第二层业务分类，优先值：产品开发、平台开发、技术研发、体系建设、人才培养、行业影响。
-- `target_description` 必须是具体考核基准，禁止“见合同”。
-- 提取关键时间节点到 `milestones`。
-
-输出 JSON 数组：
-
-```json
-[
-  {
-    "clause_id": "c1",
-    "raw_category": "核心指标/基础指标/观察项",
-    "business_category": "产品开发/平台开发/技术研发/体系建设/人才培养/行业影响",
-    "category": "产品开发/平台开发/技术研发/体系建设/人才培养/行业影响",
-    "title": "指标原文名称",
-    "target_description": "具体的考核基准描述",
-    "weight": 20,
-    "milestones": [{ "date": "2024-Q1", "content": "完成初步架构设计" }]
-  }
-]
-```
-
-### 9.2 文件级审计 Prompt
-
-角色：资深人才评估审计专家。
-
-输入：待审计指标标题、考核基准、当前交付物文件名、文件文本。
-
-强约束：
-
-1. 若文件原文出现与实际达成相关的数字，原样摘录到 `scoring_facts`。
-2. `scoring_facts.value` 必须来自文件原文或 `raw_excerpt`，不允许估算、四舍五入、按目标反推。
-3. 文件中无实际达成数字时，`scoring_facts` 返回空数组。
-
-输出 JSON：
-
-```json
-{
-  "file_name": "文件名",
-  "is_meeting_minutes": true,
-  "has_substantive_evidence": true,
-  "completion_status": "完成/未完成/部分完成",
-  "score": 0,
-  "summary": "该文件对本指标的判断（30-40字）",
-  "scoring_facts": [
-    { "value": 10, "unit": "项", "raw_excerpt": "包含该数字的原文片段", "meaning": "该数字代表什么" }
-  ],
-  "extracted_evidences": [
-    { "title": "证据点", "raw_excerpt": "原文", "summary": "说明", "confidence": 0.9 }
-  ]
-}
-```
-
-### 9.3 指标汇总审计 Prompt
-
-角色：人才评估终审专家。
-
-输入：指标、考核基准、文件级审计结果、`hasSubstantiveNonMinutes`。
-
-规则：
-
-1. 仅依据文件级结果。
-2. 会议纪要默认通过逻辑仅当存在非纪要实质证据时可作为加分/佐证，不可单独决定完成。
-3. 若 `hasSubstantiveNonMinutes=false`，最终不允许给出“完成”。
-4. `scoring_fields.rule_type` 按真实口径选择：`percentage`、`count`、`numeric_positive`、`numeric_negative`、`milestone` 或 `ai_fallback`。
-5. `actual_value` 只能来自文件级 `scoring_facts.value` 或 `extracted_evidences.raw_excerpt` 原文数字；不能根据目标值、经验或模型常识补写。
-6. 只有明确计划节点和实际完成时间，且证据能抽出提前/拖期/按期事实时，才用 `milestone`。
-7. `milestone` 尽量给出 `early_days` 或 `delayed_days`；确认为按期时 `early_days=0`、`delayed_days=0`、`on_time=true`。
-
-输出 JSON：
-
-```json
-{
-  "summary": "30-50字",
-  "completion_status": "完成/未完成/部分完成",
-  "score": 0,
-  "scoring_fields": {
-    "rule_type": "numeric_positive/numeric_negative/count/percentage/milestone/ai_fallback",
-    "target_value": 100,
-    "actual_value": 90,
-    "baseline_value": null,
-    "has_challenge": null,
-    "challenge_met": null,
-    "early_days": null,
-    "delayed_days": null,
-    "on_time": null,
-    "use_milestone_rule": false,
-    "calculation_note": "字段提取说明"
-  },
-  "adopted_files": ["文件名"],
-  "rejected_files": [{ "file_name": "xx", "reason": "xx" }],
-  "extracted_evidences": [
-    { "title": "证据点", "raw_excerpt": "原文", "summary": "共同佐证说明", "confidence": 0.9, "source_file_name": "文件名1, 文件名2" }
-  ]
-}
-```
-
-### 9.4 价值创造 Prompt
-
-角色：资深人才价值评估专家。
-
-输入：证据库预览，最多前 50 条。
-
-目标：评估数字化人才在合同职责之外创造的增量价值。
-
-关注点：架构优化能力、团队赋能、流程建设、业务影响力。
-
-输出 JSON：
-
-```json
-{
-  "score": 0,
-  "summary": "基于证据的人才价值点深度总结（30-40字）",
-  "details": {
-    "亮点1": "具体贡献说明（30-40字）",
-    "亮点2": "具体贡献说明（30-40字）"
-  }
-}
-```
-
-### 9.5 能力分析 Prompt
-
-角色：资深组织发展专家。
-
-输入：岗位要求/胜任力模型、简历、实际审计结果。
-
-强制雷达图维度：
-
-1. 培育与协同力；
-2. 创新与战略落地力；
-3. 产品履约交付力；
-4. 技术突破攻坚力。
-
-若从胜任力模型中稳定提取到其它“能力项”列，则逐项追加，不得遗漏、不得改名，不允许新增其它维度名。
-
-评分规则：
-
-- 每个 `radar_data.score` 为 0-8，保留 1 位小数。
-- `baseline` 固定 5。
-- `fit_score` 同样为 0-8。
-
-输出 JSON：
-
-```json
-{
-  "fit_score": 0,
-  "fit_eval": "岗位适配度定性评价",
-  "radar_data": [
-    { "subject": "培育与协同力", "score": 6.5, "baseline": 5, "conclusion": "评价结论", "evidence": "支撑业绩标题或行为表现", "logic": "评估逻辑" }
-  ],
-  "strengths": ["优势1", "优势2"],
-  "weaknesses": ["改进1", "改进2"],
-  "potential_level": "潜力评级文字",
-  "recommendation": "培养建议"
-}
-```
-
-### 9.6 综合总结 Prompt
-
-输入：真实审计指标结论数据、可引用指标标题池、总分、价值创造结果、能力分析。
-
-强约束：
-
-- `core_strengths`、`improvements` 必须从可引用指标标题池选择项目名称，严禁捏造。
-- `general_eval` 需整合任务指标达成与团队培养/能力沉淀。
-- `value_creation_details` 四个维度（产品项目、经营收益、技术创新、行业影响）必须对照证据库；缺乏具体证据则返回 `null`。
-- 产品项目：审计数据中出现 P 或 E 开头项目号（如 P717、E900）时，归为产品项目，并使用固定话术：“主导完成XX等XX个车型项目，并在项目推进、方案交付与跨部门协同中表现较好”。
-- `evaluation_conclusion` 不体现梯队，也不要写“需要培养什么能力”；从业绩成果、能力强项、能力适配等方面总结。
-
-输出 JSON：
-
-```json
-{
-  "core_conclusion": "一句话核心评估结论",
-  "overall_score": 92.5,
-  "general_eval": "深度综合评价报告",
-  "core_strengths": "2-3个核心优势点",
-  "improvements": "2-3个待改进及建议点",
-  "performance_grade": "B",
-  "evaluation_conclusion": "综合评价结论",
-  "value_creation_details": {
-    "score": 8,
-    "main_desc": "增量价值汇总描述",
-    "product_projects": "证据详情或 null",
-    "business_revenue": "证据详情或 null",
-    "tech_innovation": "证据详情或 null",
-    "industry_influence": "证据详情或 null"
-  },
-  "metrics": {
-    "task_count": 5,
-    "milestone_count": 10,
-    "milestone_completion_rate": 80
-  }
-}
-```
-
-## 10. 评分规则
-
-### 10.1 分数范围
-
-- 单项指标分：0-120，四舍五入取整数并 clamp 到 0-120。
-- 目标达成分：按指标权重加权平均/加权求和。
-- 价值创造分：0-10。
-- 最终总分：`目标达成分 + 价值创造分`，服务端最终报告生成时 capped 到 120；前端综合总结可保留计算值。
-- 能力分：0-8。
-
-### 10.2 数字解析
-
-- 从字符串中提取首个数字，支持百分号、中文逗号。
-- `无/未知/不适用/N/A` 视为 null。
-- 百分号文本中数字小于等于 1 时按比例转为百分数，例如 `0.8%` 的逻辑需谨慎；建议实现时遵循原逻辑：若文本含 `%` 且数字 `<=1`，则乘以 100。
-
-### 10.3 指标类型推断
-
-根据 `scoring_fields.rule_type`、`metric_type` 或目标文本推断：
-
-| 类型 | 触发条件 |
-| --- | --- |
-| `percentage` | 出现 `%`、百分比、完成率、达成率、覆盖率、占比、比例、准确率、通过率 |
-| `count` | 出现“个/项/次/篇/份/套/场/类/人/件/条/本/车型/项目/报告/标准/专利/论文/培训/课程”等数量单位 |
-| `numeric_negative` | 出现降低、减少、下降、不高于、低于、小于、以内、控制在、缺陷、投诉、成本、周期、时长、延迟、拖期、风险 |
-| `numeric_positive` | 有数字目标但不属于上述类型 |
-| `milestone` | 明确计划节点、实际完成时间、提前/拖期/按期事实 |
-| `ai_fallback` | 字段不足或证据不支持规则计算 |
-
-### 10.4 实际值证据校验
-
-- `actual_value` 必须能在文件级 `scoring_facts.raw_excerpt` 或 `extracted_evidences.raw_excerpt` 中找到。
-- 若 AI 返回的实际值未在证据中命中，则置为 null，并沿用 AI 兜底分。
-- 命中方式包括整数、小数、去零小数形式与中文/英文百分号形式。
-
-### 10.5 规则引擎公式
-
-| 类型 | 公式 | 上限/下限 |
+| 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `numeric_positive` | `actual / target * 100` | clamp 0-120 |
-| `numeric_negative` | `(2 - actual / target) * 100` | clamp 0-120 |
-| `count` | `100 + (actual - target) * 2` | clamp 0-120 |
-| `percentage` | `actual / target * 100` | clamp 0-120 |
-| 普通里程碑按期 | `100` | clamp 0-120 |
-| 普通里程碑提前 | `100 + early_days / 60 * 20` | 最高 120 |
-| 普通里程碑拖期 | `100 - delayed_days / 30 * 10` | 最低 80 |
-| 挑战指标按期达成 | `110` | clamp 0-120 |
-| 挑战指标提前达成 | `110 + early_days / 30 * 10` | 最高 120 |
-| 挑战指标拖期达成 | `110 - delayed_days / 30 * 10` | 最低 90 |
+| GET | `/api/v1/evaluation/tasks` | 任务列表。 |
+| GET | `/api/v1/evaluation/tasks/:task_id/status` | 任务状态。 |
+| GET | `/api/v1/evaluation/tasks/:task_id` | 任务详情。 |
+| GET | `/api/v1/evaluation/tasks/:task_id/evidences` | 证据链。 |
+| GET | `/api/v1/evaluation/tasks/:task_id/results` | 指标结果。 |
+| GET | `/api/v1/evaluation/tasks/:task_id/report` | 报告。 |
+| GET | `/api/v1/evaluation/tasks/:task_id/files/:file_id/download` | 下载文件。 |
 
-### 10.6 会议纪要特殊逻辑
+---
 
-- 文件级审计返回 `is_meeting_minutes=true` 时视为会议纪要。
-- 若某指标没有任何非纪要实质证据：
-  - 汇总结果不得为“完成”；
-  - 如会议纪要显示通过/同意推进/验收通过等支持性信息，可将状态置为“部分完成”，分数限定在 80-90，并生成对外友好话术；
-  - 若无会议纪要支持，则总结为未发现直接证明达成的非纪要实质证据。
-- 若存在非纪要实质证据，会议纪要可作为加分/佐证。
+## 11. 报告规范
 
-### 10.7 分类统计
+### 11.1 报告数据结构
 
-对每个结果：
+报告至少包含：
 
-```ts
-categoryScores[category] += score * (weight / 100)
-categoryWeights[category] += weight
-```
-
-分类统计：
-
-```ts
-completion_rate = categoryWeights[cat] > 0 ? round(categoryScores[cat] / categoryWeights[cat] * 100) : 0
-score = round(categoryScores[cat])
-description = 同分类指标标题用“；”连接
-```
-
-## 11. 报告生成规则
-
-### 11.1 服务端报告结构
-
-```ts
-interface GeneratedReport {
-  clauses: Clause[];
-  report_json: {
-    employee: { name: string; id: string; job: string };
-    period: { start: string; end: string };
-    overall: {
-      summary: string;
-      score: string;
-      goal_score: number;
-      creation_score: number;
-      core_strengths: string;
-      improvements: string;
-      performance_grade: string;
-      evaluation_conclusion: string;
-      value_creation_details: any;
-      metrics: {
-        task_count: number;
-        milestone_count: number;
-        milestone_completion_rate: number;
-      };
-    };
-    value_creation: { score: number; summary: string; details: any };
-    clauses: ClauseResult[];
-    evidences: Evidence[];
-    category_stats: CategoryStat[];
-    competency_analysis: CompetencyAnalysis;
-    suggestions: string[];
-  };
-  report_markdown: string;
+```json
+{
+  "employee": {
+    "id": "E001",
+    "name": "张三",
+    "job": "高级技术专家"
+  },
+  "period": {
+    "start": "2024-01-01",
+    "end": "2024-12-31"
+  },
+  "overall": {
+    "score": 92.5,
+    "goal_score": 84.5,
+    "creation_score": 8,
+    "performance_grade": "A",
+    "summary": "综合评价",
+    "core_strengths": "核心优势",
+    "improvements": "待改进点",
+    "evaluation_conclusion": "评价结论"
+  },
+  "category_stats": [],
+  "clauses": [],
+  "evidences": [],
+  "value_creation": {},
+  "competency_analysis": {},
+  "suggestions": []
 }
 ```
 
-### 11.2 人工校准优先级
+### 11.2 报告话术风格
 
-- 若存在人工校准项名称包含“目标达成”，目标达成分优先使用该校准分。
-- 若存在人工校准项名称包含“价值创造”，价值创造分优先使用该校准分。
-- 若人工校准评语不是“AI 预置建议分”，报告总体 summary 优先使用该评语。
-- 无人工校准时使用 AI/规则计算结果。
-
-### 11.3 等级规则
-
-- 若 `overall_summary.performance_grade` 存在，优先使用。
-- 否则：总分 >= 90 为 A；>= 80 为 B；否则 C。
-- 前端能力分析中的 `potential_level` 也可作为综合总结 prompt 的 `performance_grade` 输入。
-
-### 11.4 报告话术模板
-
-综合评价模板：
+综合评价建议结构：
 
 ```text
-评价期内共设计 {taskCount} 个任务指标，覆盖 {milestoneCount} 项里程碑，完成 {completedCount} 项，其中按期完成 {onTimeCount} 项，提前完成 {earlyCount} 项，拖期完成 {delayedCount} 项，整体评分 {overallScore} 分，绩效等级 {performanceGrade}；培养团队成员 {teamCount} 人，开展 {trainingTopics} 等专业培训，提升团队成员 {capabilities} 等能力，能力有效沉淀
+评价期内共设计 X 个任务指标，覆盖 X 项里程碑，完成 X 项，其中按期完成 X 项，提前完成 X 项，拖期完成 X 项，整体评分 X 分，绩效等级 X。该员工在 XX 方面表现突出，同时在 XX 方面仍有提升空间。
 ```
 
-核心优势模板：
+核心优势建议结构：
 
 ```text
-能够主导完成 {majorTasks} 重难点任务，工作成果可量化、可落地，在 {excellenceAreas} 方面表现出色，能够高效完成本职工作及交办专项任务，业绩产出稳定可控
+能够主导完成【真实指标名称】等重点任务，工作成果可量化、可落地，在【真实能力或业务方向】方面表现较好。
 ```
 
-待改进模板：
+待改进建议结构：
 
 ```text
-在 {projectTask} 工作产出了 {actualResults} 成果，距离目标仍有一定差距，且实施过程存在 {issues} 等情况，建议加强 {suggestions}
+在【真实指标名称或真实业务场景】中，仍建议加强【具体能力或管理动作】，提升后续交付稳定性。
 ```
 
-## 12. 前端实现建议
+### 11.3 等级建议
 
-### 12.1 技术栈
+如没有业务自定义等级，可使用：
 
-- React 19 + TypeScript。
-- Vite 6。
-- Tailwind CSS 4。
-- 图标：lucide-react。
-- 动画：motion/react。
-- 图表：recharts。
-- 样式工具：clsx + tailwind-merge。
+| 总分 | 等级 |
+| --- | --- |
+| >= 90 | A |
+| >= 80 且 < 90 | B |
+| >= 70 且 < 80 | C |
+| < 70 | D |
 
-### 12.2 状态设计
+如能力分析中给出 `potential_level`，可在报告中单独展示，不建议直接覆盖绩效等级，除非业务明确要求。
 
-核心前端 state：
+### 11.4 人工校准对报告的影响
 
-```ts
-currentTaskId: string | null;
-taskStatus: any;
-assessmentPeriod: { start: string; end: string };
-metricFiles: Record<string, any[]>;
-activeStep: "create" | "evidence" | "status" | "calibration" | "report" | "history";
-evidences: any[];
-clauses: any[];
-results: any[];
-valueCreation: any;
-overallSummary: any;
-categoryStats: any[];
-competencyAnalysis: any;
-activeReportTab: "overview" | "details" | "competency";
-report: any;
-showSettings: boolean;
-aiConfig: any;
-manualContractText: string;
-capabilityText: string;
-resumeText: string;
-contractPreview: { name: string; text: string } | null;
-taskHistory: any[];
-```
+- 如果人工校准了目标达成分，报告采用人工目标达成分。
+- 如果人工校准了价值创造分，报告采用人工价值创造分。
+- 人工评语应进入报告或报告备注。
+- 报告中需要保留 AI 原始建议分与人工最终分的区别，方便审计。
 
-### 12.3 本地存储
+---
 
-- `localStorage.talent_task_id` 保存当前任务 ID。
-- `localStorage.talent_active_step` 保存当前步骤。
+## 12. 非功能需求
 
-### 12.4 JSON 解析
+### 12.1 性能
 
-需要实现鲁棒 `extractJSON(text)`：
+- 单个普通文件解析应尽量在 30 秒内完成。
+- 单个指标审计应支持多个文件并发处理。
+- 大文件应截断、压缩或检索相关片段后送入模型。
 
-- 去除 Markdown code fence。
-- 优先整体 `JSON.parse`。
-- 失败后在文本中搜索第一个合法数组或对象片段解析。
-- 解析失败输出日志并返回 null/空。
+### 12.2 稳定性
 
-## 13. 后端实现建议
+- 单个文件失败不能影响整个任务。
+- 单个指标失败不能影响其它指标。
+- AI 调用失败需要重试和兜底。
+- API 错误必须返回 JSON。
 
-### 13.1 技术栈
+### 12.3 安全与隐私
 
-- Node.js ESM。
-- Express 4。
-- Vite middleware 开发模式；生产模式托管 `dist`。
-- multer 文件上传，磁盘保存到 `uploads/`。
-- uuid 生成 ID。
-- pdf-parse、officeparser、mammoth、xlsx、tesseract、pdftoppm 支持文件解析。
+- API Key 不应暴露给前端页面或日志。
+- 上传文件应与任务关联，下载时需要校验任务与文件关系。
+- 生产环境应增加鉴权和访问控制。
+- 不应在日志中完整打印敏感简历或合同内容。
 
-### 13.2 服务端内存存储
+### 12.4 可维护性
 
-```ts
-const tasks: Record<string, EvaluationTask> = {};
-let aiConfig = { provider: "local", localUrl: "", localModel: "", localApiKey: "" };
-```
+- AI Prompt 应集中管理，便于迭代。
+- 评分规则应独立封装，便于单元测试。
+- 数据结构应有 schema 校验。
+- 报告模板应与业务逻辑分离。
 
-### 13.3 启动
+---
 
-- 默认端口：3000。
-- 监听地址：`0.0.0.0`。
-- 开发：`npm run dev`，即 `tsx server.ts`。
-- 构建：`npm run build`。
-- 类型检查：`npm run lint`，即 `tsc --noEmit`。
+## 13. 验收标准
 
-## 14. 运行与环境
+### 13.1 合同解析
 
-### 14.1 安装与启动
+- 给定包含多个指标的合同，系统能解析出非空指标列表。
+- 每个指标有标题、目标描述、分类。
+- `category` 不应是“核心指标 / 基础指标 / 观察项”。
+- 有权重时能正确提取权重。
+- 有里程碑时能正确提取时间节点。
 
-```bash
-npm install
-npm run setup:ocr-deps
-npm run check:ocr-deps
-npm run dev
-```
+### 13.2 证据上传与审计
 
-### 14.2 本地 VLM/OCR 环境变量
+- 每个指标可以单独上传文件。
+- 未上传文件的指标得 0 分。
+- 上传无关材料时，不应误判完成。
+- 上传有效材料时，应能提取证据摘要和原文摘录。
+- 文件级审计结果和指标级汇总结果都应可查看。
 
-```bash
-export LOCAL_VLM_URL=http://127.0.0.1:11434/v1
-export LOCAL_VLM_MODEL=qwen2.5-vl:7b
-export LOCAL_VLM_API_KEY=your_key_if_needed
-```
+### 13.3 评分
 
-兼容变量：
+- 正向数值指标公式正确。
+- 负向数值指标公式正确。
+- 百分比指标公式正确。
+- 数量指标公式正确。
+- 里程碑提前 / 拖期公式正确。
+- AI 返回的实际值如果没有证据原文支撑，不得用于规则复算。
 
-- URL：`LOCAL_VLM_URL`、`VLM_URL`、`QWEN_API_URL`。
-- Model：`LOCAL_VLM_MODEL`、`VLM_MODEL`、`QWEN_MODEL`。
-- API Key：`LOCAL_VLM_API_KEY`、`VLM_API_KEY`、`QWEN_API_KEY`。
+### 13.4 会议纪要
 
-## 15. 测试验收标准
+- 只有会议纪要时，不得直接判为完成。
+- 会议纪要有通过信息时，可作为部分完成或佐证。
+- 有非纪要实质证据时，会议纪要可提升证据可信度。
 
-### 15.1 合同解析验收
+### 13.5 能力分析
 
-- 给定含多项指标的合同文本，系统能解析出非空 `clauses`。
-- `category` 不应为“核心指标/基础指标/观察项”。
-- 每个指标必须有 `title` 和具体 `target_description`。
-- 权重能正确读取；读取不到时可为空或默认。
+- 雷达图至少包含四个固定维度。
+- 分数范围为 0-8。
+- 每个维度有结论、证据、逻辑。
+- 岗位胜任力模型中明确的能力项可追加展示。
 
-### 15.2 证据审计验收
+### 13.6 报告
 
-- 未上传交付物的指标结果为未完成、0 分。
-- 上传无关文件时，不应误判完成。
-- 上传含实际达成数字的文件时，`scoring_facts` 必须包含原文摘录。
-- AI 返回的 `actual_value` 若无法在证据原文命中，不能用于规则复算。
-- 只有会议纪要且无非纪要实质证据时，不应输出“完成”。
+- 报告包含员工信息、考核周期、总分、等级。
+- 报告包含目标达成分与价值创造分。
+- 报告包含指标明细和证据溯源。
+- 报告包含能力分析。
+- 人工校准后报告使用人工最终分。
 
-### 15.3 评分验收
+---
 
-- 正向数值：实际 80、目标 100，应为 80 分。
-- 百分比：实际 90、目标 100，应为 90 分。
-- 数量：实际 12、目标 10，应为 104 分。
-- 负向数值：实际 8、目标 10，应为 120 分前公式值，最终 clamp 120。
-- 普通里程碑提前 30 天，应为 110 分。
-- 普通里程碑拖期 30 天，应为 90 分。
-- 挑战指标按期达成应为 110 分。
+## 14. 推荐开发里程碑
 
-### 15.4 报告验收
+### 14.1 第一阶段：最小闭环
 
-- 报告必须包含员工信息、考核周期、总分、等级、目标达成分、价值创造分。
-- 报告必须包含指标明细与证据溯源。
-- 能力分析必须至少包含 4 个核心雷达图维度。
-- 人工校准后报告分数应使用校准分。
+- 新建任务；
+- 上传 / 粘贴合同；
+- AI 解析指标；
+- 分指标上传证据；
+- 文件文本解析；
+- 简单 AI 审计；
+- 报告草稿。
 
-### 15.5 API 验收
+### 14.2 第二阶段：评分与证据增强
 
-- 所有 API 错误都返回 JSON，不返回 HTML。
-- 文件过大返回 413 相关提示。
-- `/api/v1/ai/call` 对本地模型地址自动补全 `/chat/completions`。
-- 历史任务接口不返回 `STAGING` 任务。
+- 文件级审计 + 指标级汇总；
+- 规则引擎评分；
+- 证据原文校验；
+- 会议纪要特殊逻辑；
+- 分类统计。
 
-## 16. 复刻系统时的关键一致性清单
+### 14.3 第三阶段：人才价值报告
 
-若让大模型基于本文档重新开发，请务必保证以下一致：
+- 价值创造专项；
+- 能力雷达图；
+- 人工校准；
+- 最终报告；
+- 历史记录。
 
-1. 采用“先合同解析、再分指标上传证据、再逐指标审计”的流程。
-2. `category` 使用业务分类，不使用“核心指标/基础指标/观察项”。
-3. 文件级审计与指标汇总审计分两层 AI 调用。
-4. 会议纪要不能单独决定完成。
-5. 实际值必须来源于证据原文，不能按目标反推。
-6. 分数必须支持 0-120，且包含规则引擎复算。
-7. 价值创造是独立 0-10 分专项。
-8. 能力分析雷达图必须包含四个核心维度。
-9. 报告分为概览、指标明细、能力明细。
-10. 服务端 AI 代理只支持本地 OpenAI 兼容接口。
-11. 当前交付版可使用内存存储，不强制数据库。
-12. API 路径、请求/响应结构尽量按本文档实现，便于前端和后端兼容。
+### 14.4 第四阶段：工程化增强
+
+- 数据库持久化；
+- 登录权限；
+- 报告导出；
+- Prompt 管理；
+- 审计日志；
+- 批量任务处理。
+
+---
+
+## 15. 关键一致性清单
+
+开发完成后，必须逐项确认：
+
+1. 是否先解析合同，再让用户按指标上传证据？
+2. 是否每个指标只使用自己绑定的文件审计？
+3. 是否同时有文件级审计和指标级汇总？
+4. 是否保留证据原文摘录？
+5. 是否校验实际值来自证据原文？
+6. 是否支持 0-120 指标分？
+7. 是否实现会议纪要不能单独证明完成？
+8. 是否实现价值创造 0-10 分？
+9. 是否实现四个固定能力雷达图维度？
+10. 是否支持人工校准？
+11. 是否生成包含概览、指标明细、能力分析的报告？
+12. 是否能从报告结论追溯到证据文件？
+
